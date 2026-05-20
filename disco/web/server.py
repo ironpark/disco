@@ -46,6 +46,19 @@ def parse_args() -> argparse.Namespace:
         help="Translate transcriptions to Korean",
     )
     parser.add_argument(
+        "--asr-backend",
+        type=str,
+        default="voxtral",
+        choices=["voxtral", "qwen3-asr"],
+        help="ASR backend (default: voxtral — streaming; qwen3-asr is blob-based)",
+    )
+    parser.add_argument(
+        "--asr-model",
+        type=str,
+        default=None,
+        help="Override the backend's default model checkpoint",
+    )
+    parser.add_argument(
         "--host",
         type=str,
         default="127.0.0.1",
@@ -91,6 +104,8 @@ def main():
         translate_korean=args.translate_korean,
         silence_duration=args.silence_duration,
         min_utterance_duration=args.min_utterance_duration,
+        asr_backend=args.asr_backend,
+        model_name=args.asr_model,
     )
 
     if args.device is not None:

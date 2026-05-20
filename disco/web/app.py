@@ -8,7 +8,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from disco.asr import Transcriber
+from disco.asr import make_transcriber
 from disco.audio.source import AudioSource
 from disco.diar import Diarizer
 from disco.runtime.events import EnrichedFinal, EventBus, Interim
@@ -27,6 +27,8 @@ class AppConfig:
     sample_rate: int = 16000
     min_utterance_duration: float = 0.5
     speaker_change_hold: float = 0.4
+    asr_backend: str = "voxtral"
+    model_name: str | None = None
 
 
 @dataclass
@@ -48,6 +50,8 @@ def set_config(
     translate_korean: bool = False,
     silence_duration: float = 0.5,
     min_utterance_duration: float = 0.5,
+    asr_backend: str = "voxtral",
+    model_name: str | None = None,
 ):
     _state.config = AppConfig(
         device=device,
@@ -55,6 +59,8 @@ def set_config(
         translate_korean=translate_korean,
         silence_duration=silence_duration,
         min_utterance_duration=min_utterance_duration,
+        asr_backend=asr_backend,
+        model_name=model_name,
     )
 
 
@@ -93,7 +99,11 @@ def _on_final(event: EnrichedFinal) -> None:
 
 def _build_runtime() -> Runtime:
     cfg = _state.config
-    transcriber = Transcriber(sample_rate=cfg.sample_rate)
+    transcriber = make_transcriber(
+        cfg.asr_backend,
+        model_name=cfg.model_name,
+        sample_rate=cfg.sample_rate,
+    )
     diarizer = Diarizer(sample_rate=cfg.sample_rate)
     translator = KoreanTranslator() if cfg.translate_korean else None
     if translator is not None:

@@ -15,7 +15,9 @@ class TranscriptEntry:
 class ASRConfig:
     """Configuration for real-time ASR."""
 
-    model_name: str = "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
+    asr_backend: str = "voxtral"
+    # When None, the factory picks the backend's default checkpoint.
+    model_name: str | None = None
     sample_rate: int = 16000
     channels: int = 1
     # Minimum audio fed into a session before a VAD-triggered finalize.

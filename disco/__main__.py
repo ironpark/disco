@@ -2,7 +2,7 @@
 
 import sounddevice as sd
 
-from disco.asr import Transcriber
+from disco.asr import make_transcriber
 from disco.audio.capture import get_device_info
 from disco.audio.source import AudioSource
 from disco.cli import args_to_config, parse_args, print_devices
@@ -26,7 +26,8 @@ def main() -> None:
         device_info = get_device_info(config.device)
         print(f"Using device: {device_info['name']}")
 
-    transcriber = Transcriber(
+    transcriber = make_transcriber(
+        config.asr_backend,
         model_name=config.model_name,
         sample_rate=config.sample_rate,
     )
