@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Disco - Real-time ASR</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f0f1a;
+            height: 100vh;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            padding: 15px 20px;
+            background: #1a1a2e;
+            border-bottom: 1px solid #2a2a4a;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        h1 {
+            font-size: 1.4rem;
+            background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #666;
+        }
+
+        .status-dot.recording {
+            background: #ff4757;
+            animation: blink 1s infinite;
+        }
+
+        .status-dot.connected {
+            background: #4ade80;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .config-badges {
+            display: flex;
+            gap: 10px;
+        }
+
+        .badge {
+            background: #2a2a4a;
+            padding: 6px 12px;
+            border-radius: 15px;
+            font-size: 0.8rem;
+            color: #aaa;
+        }
+
+        .badge span {
+            color: #00d2ff;
+        }
+
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .message {
+            max-width: 85%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            background: #1e1e32;
+            line-height: 1.5;
+            animation: fadeIn 0.2s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message .text {
+            font-size: 1rem;
+            word-break: break-word;
+        }
+
+        .message .translation {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #3a3a5a;
+            color: #00d2ff;
+            font-size: 0.95rem;
+        }
+
+        .message .time {
+            font-size: 0.7rem;
+            color: #555;
+            margin-top: 6px;
+        }
+
+        .message.interim {
+            background: #252540;
+            color: #888;
+            border: 1px dashed #3a3a5a;
+        }
+
+        .message.interim .text {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .message.interim .text::after {
+            content: '';
+            width: 8px;
+            height: 16px;
+            background: #00d2ff;
+            animation: cursor 0.8s infinite;
+        }
+
+        @keyframes cursor {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+
+        .empty-state {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: #444;
+            gap: 15px;
+        }
+
+        .empty-state svg {
+            width: 80px;
+            height: 80px;
+            opacity: 0.3;
+        }
+
+        .empty-state p {
+            font-size: 1.1rem;
+        }
+
+        .controls {
+            padding: 15px 20px;
+            background: #1a1a2e;
+            border-top: 1px solid #2a2a4a;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        button {
+            padding: 12px 28px;
+            border: none;
+            border-radius: 25px;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-weight: 500;
+        }
+
+        .btn-stop {
+            background: linear-gradient(135deg, #ff416c, #ff4b2b);
+            color: #fff;
+        }
+
+        .btn-start {
+            background: linear-gradient(135deg, #00d2ff, #3a7bd5);
+            color: #fff;
+        }
+
+        .btn-stop:hover, .btn-start:hover {
+            transform: scale(1.05);
+        }
+
+        .btn-clear {
+            background: transparent;
+            border: 1px solid #3a3a5a;
+            color: #888;
+        }
+
+        .btn-clear:hover {
+            background: #2a2a4a;
+            color: #fff;
+        }
+
+        .listening-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #888;
+            font-size: 0.9rem;
+        }
+
+        .listening-indicator.active {
+            color: #ff4757;
+        }
+
+        .sound-wave {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            height: 20px;
+        }
+
+        .sound-wave span {
+            width: 3px;
+            background: #ff4757;
+            border-radius: 2px;
+            animation: wave 0.5s infinite ease-in-out;
+        }
+
+        .sound-wave span:nth-child(1) { height: 8px; animation-delay: 0s; }
+        .sound-wave span:nth-child(2) { height: 14px; animation-delay: 0.1s; }
+        .sound-wave span:nth-child(3) { height: 10px; animation-delay: 0.2s; }
+        .sound-wave span:nth-child(4) { height: 16px; animation-delay: 0.3s; }
+        .sound-wave span:nth-child(5) { height: 8px; animation-delay: 0.4s; }
+
+        @keyframes wave {
+            0%, 100% { transform: scaleY(1); }
+            50% { transform: scaleY(0.5); }
+        }
+
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo">
+            <div class="status-dot" id="statusDot"></div>
+            <h1>Disco</h1>
+        </div>
+        <div class="config-badges">
+            <div class="badge">Lang: <span id="configLang">-</span></div>
+            <div class="badge hidden" id="translateBadge">+ Korean</div>
+        </div>
+    </header>
+
+    <div class="chat-container" id="chatContainer">
+        <div class="empty-state" id="emptyState">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+            </svg>
+            <p>Listening for speech...</p>
+        </div>
+    </div>
+
+    <div class="controls">
+        <div class="listening-indicator" id="listeningIndicator">
+            <div class="sound-wave">
+                <span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <span>Listening</span>
+        </div>
+        <button class="btn-stop hidden" id="stopBtn">Stop</button>
+        <button class="btn-start hidden" id="startBtn">Start</button>
+        <button class="btn-clear" id="clearBtn">Clear</button>
+    </div>
+
+    <script>
+        const chatContainer = document.getElementById('chatContainer');
+        const emptyState = document.getElementById('emptyState');
+        const statusDot = document.getElementById('statusDot');
+        const configLang = document.getElementById('configLang');
+        const translateBadge = document.getElementById('translateBadge');
+        const listeningIndicator = document.getElementById('listeningIndicator');
+        const stopBtn = document.getElementById('stopBtn');
+        const startBtn = document.getElementById('startBtn');
+        const clearBtn = document.getElementById('clearBtn');
+
+        let isRecording = false;
+        let websocket = null;
+        let reconnectTimer = null;
+        let interimMessage = null;
+
+        function updateUI() {
+            if (isRecording) {
+                statusDot.className = 'status-dot recording';
+                listeningIndicator.classList.add('active');
+                stopBtn.classList.remove('hidden');
+                startBtn.classList.add('hidden');
+            } else {
+                statusDot.className = 'status-dot connected';
+                listeningIndicator.classList.remove('active');
+                stopBtn.classList.add('hidden');
+                startBtn.classList.remove('hidden');
+            }
+        }
+
+        function updateConfig(config) {
+            configLang.textContent = config.language;
+            if (config.translate_korean) {
+                translateBadge.classList.remove('hidden');
+            } else {
+                translateBadge.classList.add('hidden');
+            }
+            isRecording = config.is_recording;
+            updateUI();
+        }
+
+        function removeEmptyState() {
+            if (emptyState && emptyState.parentNode) {
+                emptyState.remove();
+            }
+        }
+
+        function showInterim(text) {
+            removeEmptyState();
+
+            if (!interimMessage) {
+                interimMessage = document.createElement('div');
+                interimMessage.className = 'message interim';
+                interimMessage.innerHTML = '<div class="text"></div>';
+                chatContainer.appendChild(interimMessage);
+            }
+
+            interimMessage.querySelector('.text').textContent = text;
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function addFinalMessage(text, translation = null) {
+            removeEmptyState();
+
+            // Remove interim message
+            if (interimMessage) {
+                interimMessage.remove();
+                interimMessage = null;
+            }
+
+            const message = document.createElement('div');
+            message.className = 'message';
+
+            const textEl = document.createElement('div');
+            textEl.className = 'text';
+            textEl.textContent = text;
+            message.appendChild(textEl);
+
+            if (translation) {
+                const transEl = document.createElement('div');
+                transEl.className = 'translation';
+                transEl.textContent = translation;
+                message.appendChild(transEl);
+            }
+
+            const timeEl = document.createElement('div');
+            timeEl.className = 'time';
+            timeEl.textContent = new Date().toLocaleTimeString();
+            message.appendChild(timeEl);
+
+            chatContainer.appendChild(message);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function connectWebSocket() {
+            const wsUrl = `ws://${window.location.host}/ws`;
+            websocket = new WebSocket(wsUrl);
+
+            websocket.onopen = () => {
+                statusDot.className = 'status-dot connected';
+            };
+
+            websocket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                if (data.type === 'config') {
+                    updateConfig(data);
+                } else if (data.type === 'interim') {
+                    showInterim(data.text);
+                } else if (data.type === 'final') {
+                    addFinalMessage(data.text, data.translation);
+                }
+            };
+
+            websocket.onclose = () => {
+                statusDot.className = 'status-dot';
+                reconnectTimer = setTimeout(connectWebSocket, 2000);
+            };
+
+            websocket.onerror = () => {
+                statusDot.className = 'status-dot';
+            };
+        }
+
+        async function toggleRecording(start) {
+            try {
+                const endpoint = start ? '/api/start' : '/api/stop';
+                const response = await fetch(endpoint, { method: 'POST' });
+                const result = await response.json();
+
+                if (result.status === 'started') {
+                    isRecording = true;
+                } else if (result.status === 'stopped') {
+                    isRecording = false;
+                    if (interimMessage) {
+                        interimMessage.remove();
+                        interimMessage = null;
+                    }
+                }
+                updateUI();
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        function clearChat() {
+            if (interimMessage) {
+                interimMessage = null;
+            }
+            chatContainer.innerHTML = `
+                <div class="empty-state" id="emptyState">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                    </svg>
+                    <p>Listening for speech...</p>
+                </div>
+            `;
+        }
+
+        stopBtn.addEventListener('click', () => toggleRecording(false));
+        startBtn.addEventListener('click', () => toggleRecording(true));
+        clearBtn.addEventListener('click', clearChat);
+
+        connectWebSocket();
+
+        window.addEventListener('beforeunload', () => {
+            if (reconnectTimer) clearTimeout(reconnectTimer);
+            if (websocket) websocket.close();
+        });
+    </script>
+</body>
+</html>
