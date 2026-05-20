@@ -1,0 +1,86 @@
+"""Pipeline events and a small synchronous EventBus.
+
+All ``t``/``span`` values are diarizer-time seconds (``Diarizer.elapsed_seconds()``),
+the project's single audio clock.
+"""
+
+import threading
+from collections import defaultdict
+from collections.abc import Callable
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SpeechStart:
+    t: float
+
+
+@dataclass(frozen=True)
+class SpeechEnd:
+    t: float
+
+
+@dataclass(frozen=True)
+class SpeakerChange:
+    """Sustained speaker change detected within an open utterance."""
+
+    from_speaker: int | None
+    to_speaker: int
+    t: float
+
+
+@dataclass(frozen=True)
+class Interim:
+    text: str
+    span: tuple[float, float]
+    speaker: int | None = None
+
+
+@dataclass(frozen=True)
+class Final:
+    """Raw final emitted by the transcriber worker; no speaker/translation yet."""
+
+    text: str
+    span: tuple[float, float]
+
+
+@dataclass(frozen=True)
+class EnrichedFinal:
+    text: str
+    span: tuple[float, float]
+    speaker: int | None = None
+    translation: str | None = None
+
+
+@dataclass(frozen=True)
+class QueueOverflow:
+    """A bounded worker queue dropped a chunk."""
+
+    component: str
+    depth: int
+
+
+class EventBus:
+    """Synchronous, thread-safe pub/sub keyed by event class.
+
+    ``publish`` invokes subscribers on the caller's thread. The bus only
+    guards the subscriber registry — subscriber callbacks must be safe
+    against concurrent invocation themselves.
+    """
+
+    def __init__(self) -> None:
+        self._subscribers: dict[type, list[Callable]] = defaultdict(list)
+        self._lock = threading.RLock()
+
+    def subscribe(self, event_type: type, callback: Callable) -> None:
+        with self._lock:
+            self._subscribers[event_type].append(callback)
+
+    def publish(self, event) -> None:
+        with self._lock:
+            callbacks = list(self._subscribers.get(type(event), ()))
+        for cb in callbacks:
+            try:
+                cb(event)
+            except Exception as exc:
+                print(f"EventBus subscriber error ({type(event).__name__}): {exc}")
