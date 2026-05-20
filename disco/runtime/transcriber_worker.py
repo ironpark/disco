@@ -211,8 +211,19 @@ class TranscriberWorker:
                     )
 
             elif state == "draining" and session is not None:
-                # Pump until session reports done.
-                session.step()
+                # Pump until session reports done. For backends that don't
+                # produce text during recording (e.g. Qwen3-ASR, which can
+                # only start decoding once it has the closed audio buffer),
+                # this is also where text first appears — publish Interim
+                # the same way as the recording branch.
+                if session.step() and session.text != last_emit_text:
+                    last_emit_text = session.text
+                    self.bus.publish(
+                        Interim(
+                            text=session.text,
+                            span=(session_start_t, session_end_t),
+                        )
+                    )
                 if session.done:
                     text = session.text.strip()
                     debug_log(
