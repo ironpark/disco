@@ -6,6 +6,7 @@ import threading
 import numpy as np
 
 from disco.diar.sortformer import Diarizer
+from disco.runtime.debug import log as debug_log
 from disco.runtime.events import (
     EventBus,
     QueueOverflow,
@@ -120,6 +121,7 @@ class TurnDetector:
                     samples_in_utterance = chunk.size
                     bound_speaker = None
                     speaker_change_start = None
+                    debug_log("turn", f"SpeechStart t={t_now:.2f}")
                     self.bus.publish(SpeechStart(t=t_now))
                 continue
 
@@ -132,15 +134,33 @@ class TurnDetector:
 
             # Lazily bind primary speaker once diarizer has output.
             if bound_speaker is None:
-                bound_speaker = self.diarizer.dominant_speaker_in(
+                dom = self.diarizer.dominant_speaker_in(
                     t_now - samples_in_utterance / self.sample_rate, t_now
                 )
+                if dom is not None:
+                    bound_speaker = dom
+                    debug_log(
+                        "turn",
+                        f"bound speaker=S{bound_speaker} t={t_now:.2f}",
+                        f"utt={samples_in_utterance / self.sample_rate:.2f}s",
+                    )
             else:
                 latest = self.diarizer.speaker_at(t_now - self.speaker_lag)
                 if latest is not None and latest != bound_speaker:
                     if speaker_change_start is None:
                         speaker_change_start = t_now
+                        debug_log(
+                            "turn",
+                            f"speaker change candidate S{bound_speaker}->S{latest}",
+                            f"t={t_now:.2f}",
+                        )
                     elif t_now - speaker_change_start >= self.speaker_change_hold:
+                        debug_log(
+                            "turn",
+                            f"SpeakerChange S{bound_speaker}->S{latest}",
+                            f"t={t_now:.2f}",
+                            f"held={t_now - speaker_change_start:.2f}s",
+                        )
                         self.bus.publish(
                             SpeakerChange(
                                 from_speaker=bound_speaker,
@@ -161,6 +181,12 @@ class TurnDetector:
                 silence_chunks >= required_silence_chunks
                 and samples_in_utterance >= min_samples
             ):
+                debug_log(
+                    "turn",
+                    f"SpeechEnd t={t_now:.2f}",
+                    f"utt={samples_in_utterance / self.sample_rate:.2f}s",
+                    f"bound=S{bound_speaker}" if bound_speaker is not None else "bound=?",
+                )
                 self.bus.publish(SpeechEnd(t=t_now))
                 state = "quiet"
                 silence_chunks = 0

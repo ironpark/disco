@@ -8,6 +8,7 @@ from disco.asr.transcriber import Transcriber
 from disco.audio.source import AudioSource
 from disco.config import LANG_CODE_MAP
 from disco.diar.sortformer import Diarizer
+from disco.runtime.debug import log as debug_log
 from disco.runtime.events import (
     EnrichedFinal,
     EventBus,
@@ -148,6 +149,14 @@ class Runtime:
     def _enrich(self, event: Final) -> None:
         t_start, t_end = event.span
         speaker = self.diarizer.dominant_speaker_in(t_start, t_end)
+        diar_now = self.diarizer.elapsed_seconds()
+        debug_log(
+            "enrich",
+            f"Final span=({t_start:.2f},{t_end:.2f})",
+            f"speaker={'S' + str(speaker) if speaker is not None else '?'}",
+            f"diar_now={diar_now:.2f}s",
+            f"text={event.text[:40]!r}",
+        )
 
         translation: str | None = None
         if self.translator is not None:

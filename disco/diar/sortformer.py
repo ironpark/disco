@@ -7,6 +7,9 @@ from collections.abc import Callable
 import numpy as np
 from mlx_audio.vad import load as load_vad
 
+from disco.runtime.debug import enabled as debug_enabled
+from disco.runtime.debug import log as debug_log
+
 
 _RESET = object()  # control sentinel: reset streaming state
 _STOP = object()  # control sentinel: stop worker
@@ -168,5 +171,29 @@ class Diarizer:
             except Exception as exc:
                 print(f"Diarizer feed error: {exc}")
                 continue
+
+            new_segments = list(out.segments)
+            if debug_enabled("diar"):
+                prev_n = len(self._segments)
+                if len(new_segments) != prev_n or (
+                    new_segments
+                    and self._segments
+                    and (
+                        new_segments[-1].end != self._segments[-1].end
+                        or new_segments[-1].speaker != self._segments[-1].speaker
+                    )
+                ):
+                    tail = ", ".join(
+                        f"S{s.speaker}:{s.start:.2f}-{s.end:.2f}"
+                        for s in new_segments[-3:]
+                    )
+                    debug_log(
+                        "diar",
+                        f"elapsed={self.elapsed_seconds():.2f}s",
+                        f"segs={len(new_segments)}",
+                        f"tail=[{tail}]",
+                        f"qsz={self._queue.qsize()}",
+                    )
+
             with self._lock:
-                self._segments = list(out.segments)
+                self._segments = new_segments
