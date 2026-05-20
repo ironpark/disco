@@ -2,13 +2,19 @@
 
 Qwen3-ASR is a blob-style transcriber: ``model.generate(audio)`` takes a
 complete audio array and returns the transcript. It can't be fed
-incrementally, so to give the live-caption experience that Voxtral
-provides, we periodically run ``generate()`` on the audio collected so
-far during recording. Each partial pass decodes from scratch — there
-is no streaming state to carry across passes — so this trades compute
-for latency: an N-second utterance with an ``interim_interval_s`` of
-2 s decodes roughly N/2 + 1 times. Only one partial runs at a time,
-so a slow decode just skips the next interim trigger.
+incrementally, so to give some live feedback during recording we
+periodically run ``generate()`` on the audio collected so far. Each
+partial pass decodes from scratch — there's no streaming state to
+carry across passes — so this trades compute for latency: an N-second
+utterance with an ``interim_interval_s`` of 2 s decodes roughly
+N/2 + 1 times. Only one partial runs at a time; a slow decode just
+skips the next interim trigger.
+
+Display semantics: each partial pass accumulates its tokens silently
+and only flushes a single Interim once the pass finishes. Token-by-
+token streaming was tried and removed because each new partial
+re-decodes from zero, which made the per-token UI flicker noticeably
+back-and-forth as word boundaries shifted between passes.
 
 At ``close()`` we run the final pass on the complete buffer. Its
 output replaces whatever the last partial showed.
@@ -133,12 +139,17 @@ class QwenSession:
         try:
             result = next(self._gen)
         except StopIteration:
-            # Partial pass finished. Promote its text to the displayed text
-            # so we don't briefly fall back to a shorter accumulator on the
-            # next partial.
+            # Pass finished. Flush the accumulated partial text in one
+            # go so the display refreshes at the partial-pass cadence
+            # rather than flickering token-by-token (which is jumpy
+            # given each new pass re-decodes from scratch and may
+            # produce slightly different word boundaries).
             if self._gen_is_final:
                 self._done = True
             self._gen = None
+            if self._partial_text and self._partial_text != self._text:
+                self._text = self._partial_text
+                return True
             return False
         except Exception as exc:
             print(f"Qwen3-ASR decode error: {exc}")
@@ -148,13 +159,16 @@ class QwenSession:
             return False
 
         delta, is_final_token = _delta_from_result(result)
-        if not delta:
-            return False
-        self._partial_text += delta
-        self._text = self._partial_text
+        if delta:
+            # Accumulate silently — don't touch self._text until the pass
+            # completes (in the StopIteration branch above, or here on the
+            # final-token marker).
+            self._partial_text += delta
         if is_final_token and self._gen_is_final:
+            self._text = self._partial_text
             self._done = True
-        return True
+            return True
+        return False
 
 
 class Qwen3Transcriber:
