@@ -11,7 +11,7 @@ import time
 
 _ENABLED = os.environ.get("DISCO_DEBUG") == "1"
 _CHANNELS = set(
-    (os.environ.get("DISCO_DEBUG_CHANNELS") or "diar,turn,enrich").split(",")
+    (os.environ.get("DISCO_DEBUG_CHANNELS") or "diar,turn,enrich,tw").split(",")
 )
 
 

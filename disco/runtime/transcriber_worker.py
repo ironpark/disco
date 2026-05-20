@@ -2,11 +2,13 @@
 
 import queue
 import threading
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
 
 from disco.asr.transcriber import StreamingTranscription, Transcriber, is_hallucination
+from disco.runtime.debug import log as debug_log
 from disco.runtime.events import EventBus, Final, Interim, QueueOverflow
 
 
@@ -33,14 +35,21 @@ class TranscriberWorker:
         ``start()`` / ``stop()`` Lifecycle.
 
     State machine (worker-thread only):
-        idle       — no session; audio chunks are dropped.
+        idle       — no session yet. Chunks arriving here are parked in the
+                     bounded ``pending`` buffer. _Open replays them so the
+                     first chunks of each utterance (which always land in the
+                     TW queue *before* the _Open emitted by TurnDetector for
+                     the same chunk) aren't lost.
         recording  — feed chunks to the session and run step() between gets.
         draining   — session.close() done; pump step() until done. Any audio
-                     arriving here is parked in ``pending`` and replayed into
-                     the next session so we don't drop the first words of the
-                     following utterance when SpeechEnd and the next
-                     SpeechStart fire close together.
+                     arriving here is also parked in ``pending`` and replayed
+                     into the next session for the SpeechEnd/SpeechStart race.
+
+    ``pending`` is a bounded deque so long silences don't grow it forever.
     """
+
+    # ~1 s of pre-/post-utterance audio is enough to cover normal TurnDetector lag.
+    PENDING_MAXLEN = 10
 
     def __init__(
         self,
@@ -119,7 +128,10 @@ class TranscriberWorker:
         session_start_t: float = 0.0
         session_end_t: float = 0.0
         last_emit_text: str = ""
-        pending: list[np.ndarray] = []  # audio parked while draining
+        # Sliding buffer of recent audio. Captures chunks that arrive in
+        # this worker's queue before the corresponding _Open from TurnDetector
+        # (the SpeechStart-triggering chunk almost always lands here first).
+        pending: deque[np.ndarray] = deque(maxlen=self.PENDING_MAXLEN)
 
         while self._running:
             try:
@@ -141,27 +153,40 @@ class TranscriberWorker:
                     session_end_t = item.t
                     last_emit_text = ""
                     state = "recording"
-                    # Replay any audio that arrived while we were idle/draining.
+                    replayed = len(pending)
+                    # Replay buffered audio so the first chunks of this
+                    # utterance (which arrive before this _Open in the queue)
+                    # aren't lost. These chunks happened around or just
+                    # before item.t, so we don't move session_end_t for them
+                    # — the span stays anchored to live recording.
                     for chunk in pending:
                         session.feed(chunk)
-                        session_end_t += len(chunk) / self.sample_rate
                     pending.clear()
+                    debug_log(
+                        "tw",
+                        f"_Open t={item.t:.2f}",
+                        f"replayed={replayed} chunks",
+                    )
 
             elif isinstance(item, _Close):
                 if state == "recording" and session is not None:
                     session.close()
                     session_end_t = max(session_end_t, item.t)
                     state = "draining"
+                    debug_log(
+                        "tw",
+                        f"_Close t={item.t:.2f}",
+                        f"span=({session_start_t:.2f},{session_end_t:.2f})",
+                    )
                 # if idle: ignore; if draining: already closing
             elif isinstance(item, np.ndarray):
                 chunk = item
                 if state == "recording" and session is not None:
                     session.feed(chunk)
                     session_end_t += len(chunk) / self.sample_rate
-                elif state == "draining":
-                    # Park for the next session.
+                else:
+                    # idle or draining: park for the (next) session.
                     pending.append(chunk)
-                # idle: drop
 
             # Progress decoding regardless of whether we just consumed an item.
             if state == "recording" and session is not None:
@@ -179,6 +204,12 @@ class TranscriberWorker:
                 session.step()
                 if session.done:
                     text = session.text.strip()
+                    debug_log(
+                        "tw",
+                        f"drained text={text[:40]!r}",
+                        f"span=({session_start_t:.2f},{session_end_t:.2f})",
+                        f"buffered={len(pending)}",
+                    )
                     if text and not is_hallucination(text):
                         self.bus.publish(
                             Final(
