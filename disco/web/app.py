@@ -14,7 +14,6 @@ from disco.diar import Diarizer
 from disco.runtime.events import EnrichedFinal, EventBus, Interim
 from disco.runtime.runtime import Runtime
 from disco.translation import KoreanTranslator
-from disco.vad import SileroVAD
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -94,8 +93,6 @@ def _on_final(event: EnrichedFinal) -> None:
 
 def _build_runtime() -> Runtime:
     cfg = _state.config
-    vad = SileroVAD(sample_rate=cfg.sample_rate)
-    vad.load()
     transcriber = Transcriber(sample_rate=cfg.sample_rate)
     diarizer = Diarizer(sample_rate=cfg.sample_rate)
     translator = KoreanTranslator() if cfg.translate_korean else None
@@ -109,7 +106,6 @@ def _build_runtime() -> Runtime:
     _state.bus = bus
     return Runtime(
         bus=bus,
-        vad=vad,
         transcriber=transcriber,
         diarizer=diarizer,
         translator=translator,

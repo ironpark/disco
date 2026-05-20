@@ -11,7 +11,6 @@ from disco.output import ConsoleOutput
 from disco.runtime.events import EnrichedFinal, EventBus, Interim
 from disco.runtime.runtime import Runtime
 from disco.translation import KoreanTranslator
-from disco.vad import SileroVAD
 
 
 def main() -> None:
@@ -27,8 +26,6 @@ def main() -> None:
         device_info = get_device_info(config.device)
         print(f"Using device: {device_info['name']}")
 
-    vad = SileroVAD(sample_rate=config.sample_rate)
-    vad.load()
     transcriber = Transcriber(
         model_name=config.model_name,
         sample_rate=config.sample_rate,
@@ -49,7 +46,6 @@ def main() -> None:
 
     runtime = Runtime(
         bus=bus,
-        vad=vad,
         transcriber=transcriber,
         diarizer=diarizer,
         translator=translator,
