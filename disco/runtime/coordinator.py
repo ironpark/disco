@@ -4,8 +4,8 @@ Subscribes to ``SpeakerActivity`` events from the Diarizer and decides
 when utterances start/end and when the primary speaker changes. Replaces
 silero VAD with the diarizer's own per-chunk view of who is active.
 
-Trade-off vs the previous TurnDetector: SpeechStart fires one chunk
-later than silero would (you wait for the diarizer to process the chunk
+Trade-off vs a silero-based detector: SpeechStart fires one chunk later
+than silero would (you wait for the diarizer to process the chunk
 before you know whether anything was said), but turn boundaries align
 exactly with the diarizer's segments so the speaker label on Final is
 always coherent with the audio span.

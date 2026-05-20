@@ -38,8 +38,8 @@ class TranscriberWorker:
         idle       — no session yet. Chunks arriving here are parked in the
                      bounded ``pending`` buffer. _Open replays them so the
                      first chunks of each utterance (which always land in the
-                     TW queue *before* the _Open emitted by TurnDetector for
-                     the same chunk) aren't lost.
+                     TW queue *before* the _Open emitted by the coordinator
+                     for the same chunk) aren't lost.
         recording  — feed chunks to the session and run step() between gets.
         draining   — session.close() done; pump step() until done. Any audio
                      arriving here is also parked in ``pending`` and replayed
@@ -48,7 +48,7 @@ class TranscriberWorker:
     ``pending`` is a bounded deque so long silences don't grow it forever.
     """
 
-    # ~1 s of pre-/post-utterance audio is enough to cover normal TurnDetector lag.
+    # ~1 s of pre-/post-utterance audio is enough to cover normal Coordinator lag.
     PENDING_MAXLEN = 10
 
     def __init__(
