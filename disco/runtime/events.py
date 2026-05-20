@@ -11,6 +11,22 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class SpeakerActivity:
+    """Per-chunk diarizer output.
+
+    ``primary_speaker`` is the speaker with the most overlap inside the
+    chunk window, or ``None`` if no segments were emitted for this chunk
+    (i.e. silence as far as the model can tell). ``all_speakers`` lists
+    every active speaker so consumers can detect overlap.
+    """
+
+    t_start: float
+    t_end: float
+    primary_speaker: int | None
+    all_speakers: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class SpeechStart:
     t: float
 

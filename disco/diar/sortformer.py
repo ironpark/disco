@@ -62,11 +62,16 @@ class Diarizer:
         sample_rate: int = 16000,
         max_queue: int = 200,
         on_overflow: Callable[[int], None] | None = None,
+        on_activity: Callable[[float, float, int | None, tuple[int, ...]], None] | None = None,
     ):
         self.model_name = model_name
         self.sample_rate = sample_rate
         self.max_queue = max_queue
         self.on_overflow = on_overflow
+        # Called once per processed chunk with
+        # (chunk_t_start, chunk_t_end, primary_speaker, all_speakers).
+        # primary_speaker is None when no segments were emitted (silence).
+        self.on_activity = on_activity
 
         self._queue: queue.Queue = queue.Queue(maxsize=max_queue)
         self._thread: threading.Thread | None = None
@@ -262,3 +267,23 @@ class Diarizer:
                 cutoff = real_processed_s - _SEGMENT_RETENTION_S
                 if cutoff > 0 and self._segments and self._segments[0].end < cutoff:
                     self._segments = [s for s in self._segments if s.end >= cutoff]
+
+            if self.on_activity is not None:
+                # Sum each speaker's duration within this chunk to pick a primary.
+                durations: dict[int, float] = {}
+                for seg in new_segs:
+                    durations[seg.speaker] = (
+                        durations.get(seg.speaker, 0.0) + seg.end - seg.start
+                    )
+                if durations:
+                    primary = max(durations.items(), key=lambda kv: kv[1])[0]
+                    all_speakers = tuple(sorted(durations.keys()))
+                else:
+                    primary = None
+                    all_speakers = ()
+                try:
+                    self.on_activity(
+                        chunk_real_start, real_processed_s, primary, all_speakers
+                    )
+                except Exception as exc:
+                    print(f"Diarizer on_activity error: {exc}")
