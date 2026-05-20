@@ -129,9 +129,33 @@ class TranscriberWorker:
         session_end_t: float = 0.0
         last_emit_text: str = ""
         # Sliding buffer of recent audio. Captures chunks that arrive in
-        # this worker's queue before the corresponding _Open from TurnDetector
-        # (the SpeechStart-triggering chunk almost always lands here first).
+        # this worker's queue before the corresponding _Open from the
+        # coordinator (the speech-trigger chunk almost always lands here
+        # first) and chunks that arrive while we're still draining the
+        # previous session.
         pending: deque[np.ndarray] = deque(maxlen=self.PENDING_MAXLEN)
+        # _Open received while not idle. Applied once we transition to idle
+        # so a tight close/open pair (typical for SpeakerChange) doesn't
+        # silently drop the new session.
+        deferred_open: _Open | None = None
+
+        def open_now(open_evt: _Open) -> None:
+            nonlocal session, session_start_t, session_end_t
+            nonlocal last_emit_text, state
+            session = self.transcriber.start_session()
+            session_start_t = open_evt.t
+            session_end_t = open_evt.t
+            last_emit_text = ""
+            state = "recording"
+            replayed = len(pending)
+            for chunk in pending:
+                session.feed(chunk)
+            pending.clear()
+            debug_log(
+                "tw",
+                f"_Open t={open_evt.t:.2f}",
+                f"replayed={replayed} chunks",
+            )
 
         while self._running:
             try:
@@ -143,29 +167,16 @@ class TranscriberWorker:
                 break
 
             if isinstance(item, _Open):
-                if state != "idle":
-                    # Already recording: ignore stray open. Caller is expected
-                    # to close before opening a new session.
-                    pass
+                if state == "idle":
+                    open_now(item)
                 else:
-                    session = self.transcriber.start_session()
-                    session_start_t = item.t
-                    session_end_t = item.t
-                    last_emit_text = ""
-                    state = "recording"
-                    replayed = len(pending)
-                    # Replay buffered audio so the first chunks of this
-                    # utterance (which arrive before this _Open in the queue)
-                    # aren't lost. These chunks happened around or just
-                    # before item.t, so we don't move session_end_t for them
-                    # — the span stays anchored to live recording.
-                    for chunk in pending:
-                        session.feed(chunk)
-                    pending.clear()
+                    # Recording or draining — keep the most recent open and
+                    # apply it once draining completes.
+                    deferred_open = item
                     debug_log(
                         "tw",
-                        f"_Open t={item.t:.2f}",
-                        f"replayed={replayed} chunks",
+                        f"_Open deferred t={item.t:.2f}",
+                        f"state={state}",
                     )
 
             elif isinstance(item, _Close):
@@ -220,6 +231,10 @@ class TranscriberWorker:
                     session = None
                     last_emit_text = ""
                     state = "idle"
+                    if deferred_open is not None:
+                        pending_open = deferred_open
+                        deferred_open = None
+                        open_now(pending_open)
 
         # Drain on shutdown.
         if session is not None:
