@@ -1,6 +1,8 @@
 """Wire AudioSource → workers → EventBus + enrich Final into EnrichedFinal."""
 
+import os
 import threading
+import time
 
 from disco.asr.transcriber import Transcriber
 from disco.audio.source import AudioSource
@@ -10,6 +12,7 @@ from disco.runtime.events import (
     EnrichedFinal,
     EventBus,
     Final,
+    QueueOverflow,
     SpeakerChange,
     SpeechEnd,
     SpeechStart,
@@ -32,6 +35,7 @@ class Runtime:
 
     # Wait for sortformer to catch up before resolving the final speaker.
     ENRICHMENT_GRACE_S = 0.3
+    METRICS_INTERVAL_S = 10.0
 
     def __init__(
         self,
@@ -55,6 +59,12 @@ class Runtime:
         self.language = language
         self.sample_rate = sample_rate
 
+        # Route diarizer overflows through the bus so callers see them
+        # alongside the worker-emitted ones.
+        diarizer.on_overflow = lambda depth: bus.publish(
+            QueueOverflow(component="diarizer", depth=depth)
+        )
+
         self.turn_detector = TurnDetector(
             vad=vad,
             diarizer=diarizer,
@@ -72,6 +82,9 @@ class Runtime:
 
         self._source: AudioSource | None = None
         self._wired = False
+        self._metrics_thread: threading.Thread | None = None
+        self._metrics_stop = threading.Event()
+        self._metrics_enabled = os.environ.get("DISCO_METRICS") == "1"
 
     def start(self, source: AudioSource) -> None:
         self._source = source
@@ -89,11 +102,23 @@ class Runtime:
             self.bus.subscribe(SpeechEnd, self._on_speech_end)
             self.bus.subscribe(SpeakerChange, self._on_speaker_change)
             self.bus.subscribe(Final, self._on_final)
+            self.bus.subscribe(QueueOverflow, self._on_overflow)
             self._wired = True
 
         source.start()
 
+        if self._metrics_enabled and self._metrics_thread is None:
+            self._metrics_stop.clear()
+            self._metrics_thread = threading.Thread(
+                target=self._metrics_loop, daemon=True
+            )
+            self._metrics_thread.start()
+
     def stop(self) -> None:
+        if self._metrics_thread is not None:
+            self._metrics_stop.set()
+            self._metrics_thread.join(timeout=2.0)
+            self._metrics_thread = None
         if self._source is not None:
             self._source.stop()
             self._source = None
@@ -140,3 +165,16 @@ class Runtime:
                 translation=translation,
             )
         )
+
+    def _on_overflow(self, event: QueueOverflow) -> None:
+        print(f"[backpressure] {event.component} queue dropped chunk (depth={event.depth})")
+
+    def _metrics_loop(self) -> None:
+        while not self._metrics_stop.wait(self.METRICS_INTERVAL_S):
+            td_depth = self.turn_detector._queue.qsize()
+            tw_depth = self.transcriber_worker._queue.qsize()
+            diar_depth = self.diarizer._queue.qsize()
+            print(
+                f"[metrics] queues: turn={td_depth} transcriber={tw_depth} "
+                f"diarizer={diar_depth} t={time.strftime('%H:%M:%S')}"
+            )

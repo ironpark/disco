@@ -2,6 +2,7 @@
 
 import queue
 import threading
+from collections.abc import Callable
 
 import numpy as np
 from mlx_audio.vad import load as load_vad
@@ -27,11 +28,15 @@ class Diarizer:
         self,
         model_name: str = "mlx-community/diar_streaming_sortformer_4spk-v2.1-fp32",
         sample_rate: int = 16000,
+        max_queue: int = 200,
+        on_overflow: Callable[[int], None] | None = None,
     ):
         self.model_name = model_name
         self.sample_rate = sample_rate
+        self.max_queue = max_queue
+        self.on_overflow = on_overflow
 
-        self._queue: queue.Queue = queue.Queue()
+        self._queue: queue.Queue = queue.Queue(maxsize=max_queue)
         self._thread: threading.Thread | None = None
         self._running = False
         self._ready_event = threading.Event()
@@ -87,7 +92,20 @@ class Diarizer:
         if chunk.dtype != np.float32:
             chunk = chunk.astype(np.float32)
         self._samples_fed += len(chunk)
-        self._queue.put(chunk)
+        try:
+            self._queue.put_nowait(chunk)
+        except queue.Full:
+            # Drop oldest non-control item to make room.
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._queue.put_nowait(chunk)
+            except queue.Full:
+                pass
+            if self.on_overflow is not None:
+                self.on_overflow(self._queue.qsize())
 
     def elapsed_seconds(self) -> float:
         """Seconds of audio fed since the last ``start()``."""
