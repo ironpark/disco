@@ -81,6 +81,7 @@ class TranscriberWorker:
         max_queue: int = 200,
         max_draining_sessions: int = 3,
         ring_preroll_s: float = 0.2,
+        use_ring_spans: bool = False,
     ):
         self.transcriber = transcriber
         self.bus = bus
@@ -88,6 +89,7 @@ class TranscriberWorker:
         self.max_queue = max_queue
         self.max_draining_sessions = max_draining_sessions
         self.ring_preroll_s = ring_preroll_s
+        self.use_ring_spans = use_ring_spans
 
         self._queue: queue.Queue = queue.Queue(maxsize=max_queue)
         self._thread: threading.Thread | None = None
@@ -212,7 +214,7 @@ class TranscriberWorker:
             )
             replayed = 0
             replay_source = "pending"
-            if self._ring_buffer is not None:
+            if self.use_ring_spans and self._ring_buffer is not None:
                 latest_t = self._ring_buffer.latest_t_end()
                 if latest_t is not None:
                     t_start = max(0.0, open_evt.t - self.ring_preroll_s)
@@ -296,7 +298,7 @@ class TranscriberWorker:
         def close_recording(close_evt: _Close) -> None:
             nonlocal recording
             assert recording is not None
-            if self._ring_buffer is not None:
+            if self.use_ring_spans and self._ring_buffer is not None:
                 audio = self._ring_buffer.span(recording.start_t, close_evt.t)
                 if len(audio):
                     final_state = _SessionState(
