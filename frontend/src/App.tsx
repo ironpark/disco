@@ -93,6 +93,36 @@ function sameInterimTurn(
   );
 }
 
+function isFinalForInterim(
+  message: Pick<InterimMessage, "span" | "speaker" | "utterance_id">,
+  final: Pick<TranscriptMessage, "span" | "speaker" | "utterance_id">,
+) {
+  if (message.utterance_id !== undefined && final.utterance_id !== undefined) {
+    return message.utterance_id === final.utterance_id;
+  }
+
+  const messageStart = message.span?.[0];
+  const messageEnd = message.span?.[1];
+  const finalStart = final.span?.[0];
+  const finalEnd = final.span?.[1];
+  if (
+    messageStart !== undefined &&
+    messageEnd !== undefined &&
+    finalStart !== undefined &&
+    finalEnd !== undefined
+  ) {
+    const overlap = Math.min(messageEnd, finalEnd) - Math.max(messageStart, finalStart);
+    const closeStart = Math.abs(messageStart - finalStart) <= 0.75;
+    return overlap >= -0.15 || closeStart;
+  }
+
+  return (
+    message.speaker !== undefined &&
+    final.speaker !== undefined &&
+    message.speaker === final.speaker
+  );
+}
+
 function interimKey(message: InterimMessage) {
   if (message.utterance_id !== undefined) {
     return `utt-${message.utterance_id}`;
@@ -198,7 +228,7 @@ function useDiscoSocket() {
         }
         if (data.type === "final") {
           setInterim((current) => {
-            return current.filter((message) => !sameInterimTurn(message, data));
+            return current.filter((message) => !isFinalForInterim(message, data));
           });
           setMessages((current) => [
             ...current,
