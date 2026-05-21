@@ -41,6 +41,7 @@ class _SessionState:
     start_t: float
     end_t: float
     utterance_id: int
+    publish_interim: bool = True
     last_emit_text: str = ""
 
 
@@ -211,6 +212,7 @@ class TranscriberWorker:
                 start_t=open_evt.t,
                 end_t=open_evt.t,
                 utterance_id=open_evt.utterance_id,
+                publish_interim=True,
             )
             replayed = 0
             replay_source = "pending"
@@ -306,6 +308,7 @@ class TranscriberWorker:
                         start_t=recording.start_t,
                         end_t=close_evt.t,
                         utterance_id=recording.utterance_id,
+                        publish_interim=False,
                     )
                     final_state.session.feed(audio)
                     final_state.session.close()
@@ -324,6 +327,7 @@ class TranscriberWorker:
 
             recording.session.close()
             recording.end_t = max(recording.end_t, close_evt.t)
+            recording.publish_interim = False
             add_draining(recording)
             debug_log(
                 "tw",
@@ -395,9 +399,8 @@ class TranscriberWorker:
                 publish_interim(recording)
 
             for state in list(draining):
-                # For backends that don't produce text during recording
-                # (e.g. Qwen3-ASR), this is where text first appears.
-                publish_interim(state)
+                if state.publish_interim:
+                    publish_interim(state)
                 if state.session.done:
                     draining.remove(state)
                     finish_drained(state)
