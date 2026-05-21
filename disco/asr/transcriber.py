@@ -37,8 +37,26 @@ class StreamingTranscription:
         deltas = self._session.step(max_decode_tokens=self._max_decode_tokens)
         if not deltas:
             return False
-        self._text += "".join(deltas)
+        text = self._decode_generated()
+        if not text:
+            text = self._text + "".join(deltas)
+        if text == self._text:
+            return False
+        self._text = text
         return True
+
+    def _decode_generated(self) -> str:
+        generated = getattr(self._session, "generated", None)
+        model = getattr(self._session, "model", None)
+        tokenizer = getattr(model, "_tokenizer", None)
+        config = getattr(model, "config", None)
+        if generated is None or tokenizer is None:
+            return ""
+        eos = getattr(config, "eos_token_id", None)
+        tokens = [int(token) for token in generated if eos is None or token != eos]
+        if not tokens:
+            return ""
+        return tokenizer.decode(tokens)
 
     def close(self) -> None:
         self._session.close()
