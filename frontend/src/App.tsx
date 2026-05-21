@@ -119,20 +119,22 @@ function useDiscoSocket() {
             const incomingEnd = data.span?.[1] ?? Number.POSITIVE_INFINITY;
             const currentStart = current?.span?.[0];
             const currentEnd = current?.span?.[1] ?? Number.NEGATIVE_INFINITY;
+            const hasStableUtteranceIds =
+              data.utterance_id !== undefined &&
+              current?.utterance_id !== undefined;
             const isNewUtterance =
               current !== null &&
-              ((data.utterance_id !== undefined &&
-                current.utterance_id !== undefined &&
-                data.utterance_id !== current.utterance_id) ||
-                (incomingStart !== undefined &&
-                currentStart !== undefined &&
-                Math.abs(incomingStart - currentStart) > 0.25) ||
-                (data.speaker !== undefined &&
-                  current.speaker !== undefined &&
-                  data.speaker !== current.speaker) ||
-                (!data.translation &&
-                  current.text.length > 0 &&
-                  data.text.length + 3 < current.text.length));
+              (hasStableUtteranceIds
+                ? data.utterance_id !== current.utterance_id
+                : (incomingStart !== undefined &&
+                    currentStart !== undefined &&
+                    Math.abs(incomingStart - currentStart) > 0.25) ||
+                  (data.speaker !== undefined &&
+                    current.speaker !== undefined &&
+                    data.speaker !== current.speaker) ||
+                  (!data.translation &&
+                    current.text.length > 0 &&
+                    data.text.length + 3 < current.text.length));
 
             if (
               data.translation &&
@@ -151,7 +153,8 @@ function useDiscoSocket() {
               span: data.span,
               utterance_id: data.utterance_id,
               speaker: data.speaker,
-              translation: data.translation ?? (isNewUtterance ? undefined : current?.translation),
+              translation:
+                data.translation ?? (isNewUtterance ? undefined : current?.translation),
             };
           });
           return;
