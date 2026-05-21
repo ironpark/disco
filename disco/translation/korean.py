@@ -1,6 +1,7 @@
 """Korean translation using translategemma."""
 
 import threading
+from collections import OrderedDict
 
 
 class KoreanTranslator:
@@ -9,16 +10,20 @@ class KoreanTranslator:
     def __init__(
         self,
         model_name: str = "mlx-community/translategemma-4b-it-8bit",
+        cache_size: int = 128,
     ):
         """Initialize the translator.
 
         Args:
             model_name: HuggingFace model name for translation
+            cache_size: Maximum number of translation results to keep
         """
         self.model_name = model_name
+        self.cache_size = cache_size
         self._model = None
         self._tokenizer = None
         self._lock = threading.Lock()
+        self._cache: OrderedDict[tuple[str, str], str] = OrderedDict()
 
     def load(self) -> None:
         """Load the translation model."""
@@ -55,13 +60,20 @@ class KoreanTranslator:
         Returns:
             Translated text in Korean
         """
-        if not text:
+        normalized = " ".join(text.split())
+        if not normalized:
             return ""
+        cache_key = (source_lang, normalized)
 
         try:
             from mlx_lm import generate
 
             with self._lock:
+                cached = self._cache.get(cache_key)
+                if cached is not None:
+                    self._cache.move_to_end(cache_key)
+                    return cached
+
                 messages = [
                     {
                         "role": "user",
@@ -70,7 +82,7 @@ class KoreanTranslator:
                                 "type": "text",
                                 "source_lang_code": source_lang,
                                 "target_lang_code": "ko",
-                                "text": text,
+                                "text": normalized,
                             }
                         ],
                     }
@@ -85,6 +97,11 @@ class KoreanTranslator:
                     max_tokens=256,
                     verbose=False,
                 )
-            return response.strip()
+                translated = response.strip()
+                self._cache[cache_key] = translated
+                self._cache.move_to_end(cache_key)
+                while len(self._cache) > self.cache_size:
+                    self._cache.popitem(last=False)
+            return translated
         except Exception as e:
             return f"[Translation error: {e}]"
