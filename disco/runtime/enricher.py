@@ -5,7 +5,7 @@ import threading
 
 from disco.diar.sortformer import Diarizer
 from disco.runtime.debug import log as debug_log
-from disco.runtime.events import EventBus, Final, LabeledFinal
+from disco.runtime.events import EventBus, Final, LabeledFinal, TurnRef
 
 
 _STOP = object()
@@ -94,10 +94,11 @@ class FinalEnricher:
 
         return LabeledFinal(
             text=event.text,
-            span=event.span,
-            utterance_id=event.utterance_id,
-            utterance_ids=(event.utterance_id,),
-            speaker=int(speaker) if speaker is not None else None,
+            ref=TurnRef.single(
+                utterance_id=event.utterance_id,
+                span=event.span,
+                speaker=int(speaker) if speaker is not None else None,
+            ),
         )
 
     def _handle_enriched(self, event: LabeledFinal) -> None:
@@ -126,13 +127,7 @@ class FinalEnricher:
             )
             self._pending = LabeledFinal(
                 text=self._join_text(self._pending.text, event.text),
-                span=(self._pending.span[0], event.span[1]),
-                utterance_id=self._pending.utterance_id,
-                utterance_ids=self._merge_utterance_ids(
-                    self._pending.utterance_ids,
-                    event.utterance_ids,
-                ),
-                speaker=event.speaker,
+                ref=self._pending.ref.merged_with(event.ref, speaker=event.speaker),
             )
             return
 
@@ -162,14 +157,3 @@ class FinalEnricher:
         if self.language.lower() in {"japanese", "chinese", "korean"}:
             return f"{left}{right}"
         return f"{left} {right}"
-
-    def _merge_utterance_ids(
-        self,
-        left: tuple[int, ...],
-        right: tuple[int, ...],
-    ) -> tuple[int, ...]:
-        merged: list[int] = []
-        for utterance_id in (*left, *right):
-            if utterance_id not in merged:
-                merged.append(utterance_id)
-        return tuple(merged)

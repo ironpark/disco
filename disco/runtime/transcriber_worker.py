@@ -4,6 +4,7 @@ import queue
 import threading
 from collections import deque
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -35,13 +36,22 @@ class _Close:
     utterance_id: int
 
 
+class _SessionPhase(Enum):
+    RECORDING = "recording"
+    FINALIZING = "finalizing"
+
+    @property
+    def emits_interim(self) -> bool:
+        return self is _SessionPhase.RECORDING
+
+
 @dataclass
 class _SessionState:
     session: Any
     start_t: float
     end_t: float
     utterance_id: int
-    publish_interim: bool = True
+    phase: _SessionPhase
     last_emit_text: str = ""
 
 
@@ -212,7 +222,7 @@ class TranscriberWorker:
                 start_t=open_evt.t,
                 end_t=open_evt.t,
                 utterance_id=open_evt.utterance_id,
-                publish_interim=True,
+                phase=_SessionPhase.RECORDING,
             )
             replayed = 0
             replay_source = "pending"
@@ -311,7 +321,7 @@ class TranscriberWorker:
                         start_t=recording.start_t,
                         end_t=close_evt.t,
                         utterance_id=recording.utterance_id,
-                        publish_interim=False,
+                        phase=_SessionPhase.FINALIZING,
                     )
                     final_state.session.feed(audio)
                     final_state.session.close()
@@ -330,7 +340,7 @@ class TranscriberWorker:
 
             recording.session.close()
             recording.end_t = max(recording.end_t, close_evt.t)
-            recording.publish_interim = False
+            recording.phase = _SessionPhase.FINALIZING
             add_draining(recording)
             debug_log(
                 "tw",
@@ -403,7 +413,7 @@ class TranscriberWorker:
 
             for state in list(draining):
                 changed = step_session(state)
-                if state.publish_interim:
+                if state.phase.emits_interim:
                     publish_interim(state, changed=changed)
                 if state.session.done:
                     draining.remove(state)

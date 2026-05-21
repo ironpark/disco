@@ -11,6 +11,51 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class TurnRef:
+    """Transcript ownership metadata shared across enriched stages."""
+
+    utterance_id: int
+    utterance_ids: tuple[int, ...]
+    span: tuple[float, float]
+    speaker: int | None = None
+
+    @classmethod
+    def single(
+        cls,
+        *,
+        utterance_id: int,
+        span: tuple[float, float],
+        speaker: int | None = None,
+    ) -> "TurnRef":
+        return cls(
+            utterance_id=utterance_id,
+            utterance_ids=(utterance_id,),
+            span=span,
+            speaker=speaker,
+        )
+
+    def with_speaker(self, speaker: int | None) -> "TurnRef":
+        return TurnRef(
+            utterance_id=self.utterance_id,
+            utterance_ids=self.utterance_ids,
+            span=self.span,
+            speaker=speaker,
+        )
+
+    def merged_with(self, other: "TurnRef", *, speaker: int | None) -> "TurnRef":
+        utterance_ids: list[int] = []
+        for value in (*self.utterance_ids, *other.utterance_ids):
+            if value not in utterance_ids:
+                utterance_ids.append(value)
+        return TurnRef(
+            utterance_id=self.utterance_id,
+            utterance_ids=tuple(utterance_ids),
+            span=(self.span[0], other.span[1]),
+            speaker=speaker,
+        )
+
+
+@dataclass(frozen=True)
 class SpeakerActivity:
     """Per-chunk diarizer output.
 
@@ -80,20 +125,46 @@ class LabeledFinal:
     """Final with speaker attribution; translation is added downstream."""
 
     text: str
-    span: tuple[float, float]
-    utterance_id: int
-    utterance_ids: tuple[int, ...]
-    speaker: int | None = None
+    ref: TurnRef
+
+    @property
+    def span(self) -> tuple[float, float]:
+        return self.ref.span
+
+    @property
+    def utterance_id(self) -> int:
+        return self.ref.utterance_id
+
+    @property
+    def utterance_ids(self) -> tuple[int, ...]:
+        return self.ref.utterance_ids
+
+    @property
+    def speaker(self) -> int | None:
+        return self.ref.speaker
 
 
 @dataclass(frozen=True)
 class EnrichedFinal:
     text: str
-    span: tuple[float, float]
-    utterance_id: int
-    utterance_ids: tuple[int, ...]
-    speaker: int | None = None
+    ref: TurnRef
     translation: str | None = None
+
+    @property
+    def span(self) -> tuple[float, float]:
+        return self.ref.span
+
+    @property
+    def utterance_id(self) -> int:
+        return self.ref.utterance_id
+
+    @property
+    def utterance_ids(self) -> tuple[int, ...]:
+        return self.ref.utterance_ids
+
+    @property
+    def speaker(self) -> int | None:
+        return self.ref.speaker
 
 
 @dataclass(frozen=True)

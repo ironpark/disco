@@ -27,6 +27,11 @@ export type InterimMessage = {
   translation?: string;
 };
 
+export type InterimState = {
+  byId: Record<string, InterimMessage>;
+  fallback: InterimMessage[];
+};
+
 export const configAtom = atom<AppConfig>({
   language: "-",
   translate_korean: false,
@@ -35,7 +40,7 @@ export const configAtom = atom<AppConfig>({
 
 export const connectionStatusAtom = atom<ConnectionStatus>("connecting");
 export const messagesAtom = atom<TranscriptMessage[]>([]);
-export const interimAtom = atom<InterimMessage[]>([]);
+export const interimAtom = atom<InterimState>({ byId: {}, fallback: [] });
 export const errorAtom = atom<string | null>(null);
 
 export const isRecordingAtom = atom(
@@ -57,4 +62,11 @@ export const statsAtom = atom((get) => {
     speakers: speakers.size,
     translated: messages.filter((message) => message.translation).length,
   };
+});
+
+export const interimListAtom = atom((get) => {
+  const interim = get(interimAtom);
+  return [...Object.values(interim.byId), ...interim.fallback].sort(
+    (left, right) => (left.span?.[0] ?? 0) - (right.span?.[0] ?? 0),
+  );
 });

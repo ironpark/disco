@@ -23,11 +23,13 @@ import {
   connectionStatusAtom,
   errorAtom,
   interimAtom,
+  interimListAtom,
   isRecordingAtom,
   messagesAtom,
   statsAtom,
   type AppConfig,
   type InterimMessage,
+  type InterimState,
   type TranscriptMessage,
 } from "@/state/disco";
 
@@ -124,7 +126,8 @@ function isFinalForInterim(
       message.speaker === undefined ||
       final.speaker === undefined ||
       message.speaker === final.speaker;
-    const overlap = Math.min(messageEnd, finalEnd) - Math.max(messageStart, finalStart);
+    const overlap =
+      Math.min(messageEnd, finalEnd) - Math.max(messageStart, finalStart);
     const closeStart = Math.abs(messageStart - finalStart) <= 0.75;
     return sameSpeaker && (overlap >= -0.15 || closeStart);
   }
@@ -144,6 +147,81 @@ function interimKey(message: InterimMessage) {
     return `span-${message.span[0].toFixed(2)}`;
   }
   return `speaker-${message.speaker ?? "unknown"}`;
+}
+
+const emptyInterimState: InterimState = { byId: {}, fallback: [] };
+
+function mergeInterimMessage(
+  existing: InterimMessage | null,
+  data: Extract<ServerMessage, { type: "interim" }>,
+) {
+  const incomingEnd = data.span?.[1] ?? Number.POSITIVE_INFINITY;
+  const currentEnd = existing?.span?.[1] ?? Number.NEGATIVE_INFINITY;
+  if (data.translation && existing && incomingEnd < currentEnd) {
+    return {
+      ...existing,
+      translation: data.translation,
+    };
+  }
+
+  return {
+    text: data.text,
+    span: data.span,
+    utterance_id: data.utterance_id,
+    speaker: data.speaker,
+    translation: data.translation ?? existing?.translation,
+  };
+}
+
+function upsertInterim(
+  current: InterimState,
+  data: Extract<ServerMessage, { type: "interim" }>,
+): InterimState {
+  if (data.utterance_id !== undefined) {
+    const key = String(data.utterance_id);
+    const existing = current.byId[key] ?? null;
+    return {
+      ...current,
+      byId: {
+        ...current.byId,
+        [key]: mergeInterimMessage(existing, data),
+      },
+    };
+  }
+
+  const existingIndex = current.fallback.findIndex((message) =>
+    sameInterimTurn(message, data),
+  );
+  const existing = existingIndex >= 0 ? current.fallback[existingIndex] : null;
+  const nextMessage = mergeInterimMessage(existing, data);
+  if (existingIndex < 0) {
+    return {
+      ...current,
+      fallback: [...current.fallback, nextMessage],
+    };
+  }
+  const fallback = [...current.fallback];
+  fallback[existingIndex] = nextMessage;
+  return { ...current, fallback };
+}
+
+function removeFinalizedInterims(
+  current: InterimState,
+  data: Extract<ServerMessage, { type: "final" }>,
+): InterimState {
+  const byId = { ...current.byId };
+  const ids =
+    data.utterance_ids ??
+    (data.utterance_id !== undefined ? [data.utterance_id] : []);
+  for (const id of ids) {
+    delete byId[String(id)];
+  }
+  return {
+    byId,
+    fallback: current.fallback.filter(
+      (message) => !isFinalForInterim(message, data),
+    ),
+  };
 }
 
 function useDiscoSocket() {
@@ -178,71 +256,11 @@ function useDiscoSocket() {
           return;
         }
         if (data.type === "interim") {
-          setInterim((current) => {
-            const existingIndex = current.findIndex((message) =>
-              sameInterimTurn(message, data),
-            );
-            const existing = existingIndex >= 0 ? current[existingIndex] : null;
-            const incomingStart = data.span?.[0];
-            const incomingEnd = data.span?.[1] ?? Number.POSITIVE_INFINITY;
-            const currentStart = existing?.span?.[0];
-            const currentEnd = existing?.span?.[1] ?? Number.NEGATIVE_INFINITY;
-            const hasStableUtteranceIds =
-              data.utterance_id !== undefined &&
-              existing?.utterance_id !== undefined;
-            const isNewUtterance =
-              existing !== null &&
-              (hasStableUtteranceIds
-                ? data.utterance_id !== existing.utterance_id
-                : (incomingStart !== undefined &&
-                    currentStart !== undefined &&
-                    Math.abs(incomingStart - currentStart) > 0.25) ||
-                  (data.speaker !== undefined &&
-                    existing.speaker !== undefined &&
-                    data.speaker !== existing.speaker) ||
-                  (!data.translation &&
-                    existing.text.length > 0 &&
-                    data.text.length + 3 < existing.text.length));
-
-            if (
-              data.translation &&
-              existing &&
-              !isNewUtterance &&
-              incomingEnd < currentEnd
-            ) {
-              const next = [...current];
-              next[existingIndex] = {
-                ...existing,
-                translation: data.translation,
-              };
-              return next;
-            }
-
-            const nextMessage: InterimMessage = {
-              text: data.text,
-              span: data.span,
-              utterance_id: data.utterance_id,
-              speaker: data.speaker,
-              translation:
-                data.translation ??
-                (isNewUtterance ? undefined : existing?.translation),
-            };
-
-            if (existingIndex < 0) {
-              return [...current, nextMessage].sort(
-                (left, right) => (left.span?.[0] ?? 0) - (right.span?.[0] ?? 0),
-              );
-            }
-            const next = [...current];
-            next[existingIndex] = nextMessage;
-            return next;
-          });
+          setInterim((current) => upsertInterim(current, data));
           return;
         }
         if (data.type === "final") {
-          setInterim((current) => {
-            return current.filter((message) => !isFinalForInterim(message, data));
-          });
+          setInterim((current) => removeFinalizedInterims(current, data));
           setMessages((current) => [
             ...current,
             {
@@ -365,7 +383,7 @@ function MessageRow({
 
 function TranscriptPanel() {
   const messages = useAtomValue(messagesAtom);
-  const interims = useAtomValue(interimAtom);
+  const interims = useAtomValue(interimListAtom);
   const viewportRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -419,30 +437,30 @@ function TranscriptPanel() {
                 key={interimKey(interim)}
                 className="rounded-lg border border-dashed border-cyan-500/30 bg-cyan-500/5 px-4 py-3"
               >
-                  <div className="mb-2 flex items-center gap-2">
-                    <span
-                      className={cn(
-                        "inline-flex h-6 items-center rounded-md px-2 text-xs font-medium ring-1",
-                        speakerClass(interim.speaker),
-                      )}
-                    >
-                      {speakerLabel(interim.speaker)}
-                    </span>
-                    <Loader2 className="size-3.5 animate-spin text-cyan-300" />
-                  </div>
-                  <p className="text-[0.95rem] leading-6 text-zinc-300">
-                    {interim.text}
-                  </p>
-                  {interim.translation && (
-                    <>
-                      <Separator className="my-3 bg-cyan-500/20" />
-                      <p className="text-[0.92rem] leading-6 text-cyan-200">
-                        {interim.translation}
-                      </p>
-                    </>
+                <div className="mb-2 flex items-center gap-2">
+                  <span
+                    className={cn(
+                      "inline-flex h-6 items-center rounded-md px-2 text-xs font-medium ring-1",
+                      speakerClass(interim.speaker),
+                    )}
+                  >
+                    {speakerLabel(interim.speaker)}
+                  </span>
+                  <Loader2 className="size-3.5 animate-spin text-cyan-300" />
+                </div>
+                <p className="text-[0.95rem] leading-6 text-zinc-300">
+                  {interim.text}
+                </p>
+                {interim.translation && (
+                  <>
+                    <Separator className="my-3 bg-cyan-500/20" />
+                    <p className="text-[0.92rem] leading-6 text-cyan-200">
+                      {interim.translation}
+                    </p>
+                  </>
                   )}
-                </article>
-              ))}
+              </article>
+            ))}
           </div>
         </ScrollArea>
       </CardContent>
@@ -533,7 +551,7 @@ function ControlBar() {
       }
       if (data.status === "stopped") {
         setRecording(false);
-        setInterim([]);
+        setInterim(emptyInterimState);
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Request failed");
@@ -562,7 +580,7 @@ function ControlBar() {
             variant="outline"
             onClick={() => {
               setMessages([]);
-              setInterim([]);
+              setInterim(emptyInterimState);
             }}
           >
             <Trash2 className="size-4" />
