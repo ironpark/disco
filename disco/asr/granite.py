@@ -1,7 +1,120 @@
 """IBM Granite Speech backend via mlx-audio."""
 
+import numpy as np
+
 from disco.asr.hallucination import is_hallucination
-from disco.asr.qwen import QwenSession
+
+
+def _text_from_result(result) -> str:
+    if isinstance(result, str):
+        return result
+    return getattr(result, "text", "") or ""
+
+
+class GraniteSpeechSession:
+    """Blob-style Granite Speech session with streaming generator output."""
+
+    def __init__(
+        self,
+        model,
+        sample_rate: int,
+        interim_interval_s: float = 2.0,
+        language: str | None = None,
+    ):
+        self._model = model
+        self._sample_rate = sample_rate
+        self._interim_interval = max(0.5, interim_interval_s)
+        self._language = language
+        self._chunks: list[np.ndarray] = []
+        self._cur_samples = 0
+        self._next_interim_at = int(self._interim_interval * sample_rate)
+        self._text = ""
+        self._partial_text = ""
+        self._gen = None
+        self._gen_is_final = False
+        self._closed = False
+        self._done = False
+
+    @property
+    def text(self) -> str:
+        return self._text
+
+    @property
+    def done(self) -> bool:
+        return self._done
+
+    def feed(self, samples: np.ndarray) -> None:
+        if samples.ndim > 1:
+            samples = samples.reshape(-1)
+        if samples.dtype != np.float32:
+            samples = samples.astype(np.float32)
+        self._chunks.append(samples)
+        self._cur_samples += len(samples)
+
+    def step(self) -> bool:
+        if self._gen is not None:
+            return self._pump_gen()
+        if self._done:
+            return False
+        if self._closed:
+            self._start_gen(final=True)
+            return False
+        if self._cur_samples >= self._next_interim_at and self._chunks:
+            self._start_gen(final=False)
+            self._next_interim_at = self._cur_samples + int(
+                self._interim_interval * self._sample_rate
+            )
+        return False
+
+    def close(self) -> None:
+        self._closed = True
+
+    def drain(self) -> None:
+        while not self._done:
+            self.step()
+
+    def _start_gen(self, *, final: bool) -> None:
+        if not self._chunks:
+            if final:
+                self._done = True
+            return
+        audio = np.concatenate(self._chunks)
+        gen_kwargs: dict = {"stream": True}
+        if self._language is not None:
+            gen_kwargs["language"] = self._language
+        try:
+            self._gen = self._model.generate(audio, **gen_kwargs)
+            self._gen_is_final = final
+            self._partial_text = ""
+        except Exception as exc:
+            print(f"Granite Speech generate() failed: {exc}")
+            self._gen = None
+            if final:
+                self._done = True
+
+    def _pump_gen(self) -> bool:
+        try:
+            result = next(self._gen)
+        except StopIteration:
+            if self._gen_is_final:
+                self._done = True
+            self._gen = None
+            text = self._partial_text.strip()
+            if text and text != self._text:
+                self._text = text
+                return True
+            return False
+        except Exception as exc:
+            print(f"Granite Speech decode error: {exc}")
+            if self._gen_is_final:
+                self._done = True
+            self._gen = None
+            return False
+
+        delta = _text_from_result(result)
+        if delta:
+            self._partial_text += delta
+        return False
 
 
 class GraniteSpeechTranscriber:
@@ -13,11 +126,13 @@ class GraniteSpeechTranscriber:
         sample_rate: int = 16000,
         language: str | None = None,
         interim_interval_s: float = 2.0,
+        translate_speech: bool = False,
     ):
         self.model_name = model_name
         self.sample_rate = sample_rate
-        self.language = language
+        self.language = language if translate_speech else None
         self.interim_interval_s = interim_interval_s
+        self.translate_speech = translate_speech
         self._model = None
 
     def load(self) -> None:
@@ -34,13 +149,13 @@ class GraniteSpeechTranscriber:
             self.load()
         return self._model
 
-    def start_session(self) -> QwenSession:
-        return QwenSession(
+    def start_session(self) -> GraniteSpeechSession:
+        return GraniteSpeechSession(
             self.model,
             self.sample_rate,
-            language=self.language,
             interim_interval_s=self.interim_interval_s,
+            language=self.language,
         )
 
 
-__all__ = ["GraniteSpeechTranscriber", "is_hallucination"]
+__all__ = ["GraniteSpeechSession", "GraniteSpeechTranscriber", "is_hallucination"]
