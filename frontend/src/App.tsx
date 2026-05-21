@@ -318,10 +318,18 @@ function MessageRow({
   message: TranscriptMessage;
   compact: boolean;
 }) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setVisible(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
   return (
     <article
       className={cn(
-        "border-l-2 border-zinc-700 bg-zinc-950/55 px-4 py-3 shadow-sm ring-1 ring-white/5",
+        "border-l-2 border-zinc-700 bg-zinc-950/55 px-4 py-3 opacity-0 shadow-sm ring-1 ring-white/5 transition-opacity duration-700 ease-out",
+        visible && "opacity-100",
         compact ? "rounded-md" : "rounded-lg",
         message.speaker === 0 && "border-sky-400",
         message.speaker === 1 && "border-rose-400",
