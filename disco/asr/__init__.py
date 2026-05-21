@@ -2,8 +2,7 @@
 
 from typing import Any
 
-from disco.asr.qwen import Qwen3Transcriber
-from disco.asr.transcriber import Transcriber, is_hallucination
+from disco.asr.hallucination import is_hallucination
 
 
 BACKEND_DEFAULT_MODELS = {
@@ -12,7 +11,13 @@ BACKEND_DEFAULT_MODELS = {
 }
 
 
-def make_transcriber(backend: str, *, sample_rate: int = 16000, model_name: str | None = None, **kwargs: Any):
+def make_transcriber(
+    backend: str,
+    *,
+    sample_rate: int = 16000,
+    model_name: str | None = None,
+    **kwargs: Any,
+):
     """Construct a transcriber for the named backend.
 
     ``backend`` selects the model family; ``model_name`` overrides the
@@ -28,15 +33,18 @@ def make_transcriber(backend: str, *, sample_rate: int = 16000, model_name: str 
             f"Choose one of {sorted(BACKEND_DEFAULT_MODELS)}."
         )
     if backend == "voxtral":
+        from disco.asr.transcriber import Transcriber
+
+        kwargs.pop("language", None)
         return Transcriber(model_name=name, sample_rate=sample_rate, **kwargs)
     if backend == "qwen3-asr":
+        from disco.asr.qwen import Qwen3Transcriber
+
         return Qwen3Transcriber(model_name=name, sample_rate=sample_rate, **kwargs)
     raise ValueError(f"Unsupported ASR backend: {backend!r}")
 
 
 __all__ = [
-    "Transcriber",
-    "Qwen3Transcriber",
     "BACKEND_DEFAULT_MODELS",
     "is_hallucination",
     "make_transcriber",

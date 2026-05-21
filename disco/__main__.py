@@ -30,6 +30,7 @@ def main() -> None:
         config.asr_backend,
         model_name=config.model_name,
         sample_rate=config.sample_rate,
+        language=config.language,
     )
     diarizer = Diarizer(sample_rate=config.sample_rate)
     translator = KoreanTranslator() if config.translate_to_korean else None

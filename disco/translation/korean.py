@@ -1,8 +1,5 @@
 """Korean translation using translategemma."""
 
-from mlx_lm import generate
-from mlx_lm import load as load_lm
-
 
 class KoreanTranslator:
     """Translate text to Korean using translategemma."""
@@ -23,6 +20,8 @@ class KoreanTranslator:
     def load(self) -> None:
         """Load the translation model."""
         if self._model is None:
+            from mlx_lm import load as load_lm
+
             print(f"Loading translation model: {self.model_name}")
             self._model, self._tokenizer = load_lm(self.model_name)
             # Add <end_of_turn> as EOS token for proper stopping
@@ -57,6 +56,8 @@ class KoreanTranslator:
             return ""
 
         try:
+            from mlx_lm import generate
+
             messages = [
                 {
                     "role": "user",

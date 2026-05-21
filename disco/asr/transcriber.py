@@ -1,19 +1,8 @@
 """Streaming ASR via mlx-audio voxtral_realtime."""
 
 import numpy as np
-from mlx_audio.stt import load as load_asr
 
-
-# Text the model tends to emit on silence-only input.
-HALLUCINATIONS = frozenset({
-    "okay", "okay.", "ok", "ok.",
-    "thank you.", "thanks.", "bye.", "yes.", "no.",
-    "...", ".", "",
-})
-
-
-def is_hallucination(text: str) -> bool:
-    return text.strip().lower() in HALLUCINATIONS
+from disco.asr.hallucination import is_hallucination
 
 
 class StreamingTranscription:
@@ -78,6 +67,8 @@ class Transcriber:
 
     def load(self) -> None:
         if self._model is None:
+            from mlx_audio.stt import load as load_asr
+
             print(f"Loading ASR model: {self.model_name}")
             self._model = load_asr(self.model_name)
             print("ASR model loaded!")

@@ -4,12 +4,17 @@ import queue
 import threading
 from collections import deque
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from disco.asr.transcriber import StreamingTranscription, Transcriber, is_hallucination
+from disco.asr.hallucination import is_hallucination
+from disco.audio.frame import AudioFrame
 from disco.runtime.debug import log as debug_log
 from disco.runtime.events import EventBus, Final, Interim, QueueOverflow
+
+if TYPE_CHECKING:
+    from disco.asr.transcriber import StreamingTranscription, Transcriber
 
 
 @dataclass(frozen=True)
@@ -53,7 +58,7 @@ class TranscriberWorker:
 
     def __init__(
         self,
-        transcriber: Transcriber,
+        transcriber: "Transcriber",
         bus: EventBus,
         sample_rate: int = 16000,
         max_queue: int = 200,
@@ -67,6 +72,7 @@ class TranscriberWorker:
         self._thread: threading.Thread | None = None
         self._running = False
         self._ready = threading.Event()
+        self._load_error: Exception | None = None
 
     # ---- producer-side API (any thread) ----
 
@@ -77,18 +83,29 @@ class TranscriberWorker:
         self._running = True
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
-        self._ready.wait()
+        if not self._ready.wait(timeout=120.0):
+            self._running = False
+            raise TimeoutError("Timed out loading ASR model")
+        if self._load_error is not None:
+            raise RuntimeError("ASR model failed to load") from self._load_error
 
     def stop(self) -> None:
         if self._thread is None:
             return
         self._running = False
-        self._queue.put(_STOP)
+        try:
+            self._queue.put_nowait(_STOP)
+        except queue.Full:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            self._queue.put_nowait(_STOP)
         self._thread.join(timeout=2.0)
         self._thread = None
 
-    def feed(self, chunk: np.ndarray) -> None:
-        self._enqueue(chunk, kind="audio")
+    def feed(self, frame: AudioFrame | np.ndarray) -> None:
+        self._enqueue(frame, kind="audio")
 
     def open_session(self, t: float) -> None:
         self._enqueue(_Open(t=t), kind="open")
@@ -120,11 +137,16 @@ class TranscriberWorker:
     def _worker(self) -> None:
         # Voxtral and its session live entirely on this thread so MLX
         # thread-local streams stay consistent across feed / step / close.
-        self.transcriber.load()
+        try:
+            self.transcriber.load()
+        except Exception as exc:
+            self._load_error = exc
+            self._ready.set()
+            return
         self._ready.set()
 
         state: str = "idle"
-        session: StreamingTranscription | None = None
+        session: Any = None
         session_start_t: float = 0.0
         session_end_t: float = 0.0
         last_emit_text: str = ""
@@ -133,7 +155,7 @@ class TranscriberWorker:
         # coordinator (the speech-trigger chunk almost always lands here
         # first) and chunks that arrive while we're still draining the
         # previous session.
-        pending: deque[np.ndarray] = deque(maxlen=self.PENDING_MAXLEN)
+        pending: deque[AudioFrame | np.ndarray] = deque(maxlen=self.PENDING_MAXLEN)
         # _Open received while not idle. Applied once we transition to idle
         # so a tight close/open pair (typical for SpeakerChange) doesn't
         # silently drop the new session.
@@ -149,7 +171,7 @@ class TranscriberWorker:
             state = "recording"
             replayed = len(pending)
             for chunk in pending:
-                session.feed(chunk)
+                session.feed(chunk.samples if isinstance(chunk, AudioFrame) else chunk)
             pending.clear()
             debug_log(
                 "tw",
@@ -190,14 +212,17 @@ class TranscriberWorker:
                         f"span=({session_start_t:.2f},{session_end_t:.2f})",
                     )
                 # if idle: ignore; if draining: already closing
-            elif isinstance(item, np.ndarray):
-                chunk = item
+            elif isinstance(item, (AudioFrame, np.ndarray)):
+                chunk = item.samples if isinstance(item, AudioFrame) else item
                 if state == "recording" and session is not None:
                     session.feed(chunk)
-                    session_end_t += len(chunk) / self.sample_rate
+                    if isinstance(item, AudioFrame):
+                        session_end_t = max(session_end_t, item.t_end)
+                    else:
+                        session_end_t += len(chunk) / self.sample_rate
                 else:
                     # idle or draining: park for the (next) session.
-                    pending.append(chunk)
+                    pending.append(item)
 
             # Progress decoding regardless of whether we just consumed an item.
             if state == "recording" and session is not None:

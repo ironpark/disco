@@ -3,15 +3,13 @@
 import os
 import threading
 import time
+from typing import TYPE_CHECKING
 
-from disco.asr.transcriber import Transcriber
 from disco.audio.source import AudioSource
-from disco.config import LANG_CODE_MAP
 from disco.diar.sortformer import Diarizer
 from disco.runtime.coordinator import Coordinator
-from disco.runtime.debug import log as debug_log
+from disco.runtime.enricher import FinalEnricher
 from disco.runtime.events import (
-    EnrichedFinal,
     EventBus,
     Final,
     QueueOverflow,
@@ -22,6 +20,9 @@ from disco.runtime.events import (
 )
 from disco.runtime.transcriber_worker import TranscriberWorker
 from disco.translation.korean import KoreanTranslator
+
+if TYPE_CHECKING:
+    from disco.asr.transcriber import Transcriber
 
 
 class Runtime:
@@ -37,15 +38,13 @@ class Runtime:
     cumulative segment store used at finalize time.
     """
 
-    # Wait for sortformer to catch up before resolving the final speaker.
-    ENRICHMENT_GRACE_S = 0.3
     METRICS_INTERVAL_S = 10.0
 
     def __init__(
         self,
         *,
         bus: EventBus,
-        transcriber: Transcriber,
+        transcriber: "Transcriber",
         diarizer: Diarizer,
         translator: KoreanTranslator | None = None,
         language: str = "English",
@@ -88,6 +87,13 @@ class Runtime:
             bus=bus,
             sample_rate=sample_rate,
         )
+        self.enricher = FinalEnricher(
+            bus=bus,
+            diarizer=diarizer,
+            translator=translator,
+            language=language,
+            grace_s=0.3,
+        )
 
         self._source: AudioSource | None = None
         self._wired = False
@@ -100,6 +106,7 @@ class Runtime:
 
         self.diarizer.start()
         self.transcriber_worker.start()
+        self.enricher.start()
 
         source.subscribe(self.diarizer)
         source.subscribe(self.transcriber_worker)
@@ -131,6 +138,7 @@ class Runtime:
             self._source.stop()
             self._source = None
         self.transcriber_worker.stop()
+        self.enricher.stop()
         self.diarizer.stop()
 
     # ---- bus handlers ----
@@ -150,38 +158,7 @@ class Runtime:
         self.transcriber_worker.open_session(event.t)
 
     def _on_final(self, event: Final) -> None:
-        # Sortformer emits segments with some lag; wait briefly so the
-        # last words of the utterance are covered by the speaker query.
-        threading.Timer(self.ENRICHMENT_GRACE_S, self._enrich, args=(event,)).start()
-
-    def _enrich(self, event: Final) -> None:
-        t_start, t_end = event.span
-        speaker = self.diarizer.dominant_speaker_in(t_start, t_end)
-        diar_now = self.diarizer.elapsed_seconds()
-        debug_log(
-            "enrich",
-            f"Final span=({t_start:.2f},{t_end:.2f})",
-            f"speaker={'S' + str(speaker) if speaker is not None else '?'}",
-            f"diar_now={diar_now:.2f}s",
-            f"text={event.text[:40]!r}",
-        )
-
-        translation: str | None = None
-        if self.translator is not None:
-            source_lang = LANG_CODE_MAP.get(self.language.lower(), "en")
-            try:
-                translation = self.translator.translate(event.text, source_lang)
-            except Exception as exc:
-                print(f"Translation error: {exc}")
-
-        self.bus.publish(
-            EnrichedFinal(
-                text=event.text,
-                span=event.span,
-                speaker=int(speaker) if speaker is not None else None,
-                translation=translation,
-            )
-        )
+        self.enricher.submit(event)
 
     def _on_overflow(self, event: QueueOverflow) -> None:
         print(f"[backpressure] {event.component} queue dropped chunk (depth={event.depth})")

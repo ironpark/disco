@@ -6,8 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
-from mlx_audio.vad import load as load_vad
 
+from disco.audio.frame import AudioFrame
 from disco.runtime.debug import enabled as debug_enabled
 from disco.runtime.debug import log as debug_log
 
@@ -81,6 +81,7 @@ class Diarizer:
 
         self._lock = threading.Lock()
         self._model = None
+        self._load_error: Exception | None = None
         self._frame_duration: float = 0.0  # set in worker after model load
         self._segments: list[_Segment] = []  # cumulative, in real audio-time
         self._samples_fed: int = 0  # producer-side count, only mutated by feed()
@@ -94,7 +95,11 @@ class Diarizer:
         self._running = True
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
-        self._ready_event.wait()
+        if not self._ready_event.wait(timeout=120.0):
+            self._running = False
+            raise TimeoutError("Timed out loading diarization model")
+        if self._load_error is not None:
+            raise RuntimeError("Diarization model failed to load") from self._load_error
         print("Diarization model loaded!")
 
     def start(self) -> None:
@@ -106,35 +111,49 @@ class Diarizer:
             self._segments = []
             self._samples_fed = 0
         self._queue.put(_RESET)
-        self._reset_event.wait()
+        if not self._reset_event.wait(timeout=10.0):
+            raise TimeoutError("Timed out resetting diarization stream")
 
     def stop(self) -> None:
         """Stop the worker thread. Call on shutdown."""
         if self._thread is None:
             return
         self._running = False
-        self._queue.put(_STOP)
+        try:
+            self._queue.put_nowait(_STOP)
+        except queue.Full:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            self._queue.put_nowait(_STOP)
         self._thread.join(timeout=2.0)
         self._thread = None
 
-    def feed(self, chunk: np.ndarray) -> None:
+    def feed(self, frame: AudioFrame | np.ndarray) -> None:
         """Queue a chunk for diarization. Cheap and thread-safe."""
         if not self._running or self._model is None:
             return
+        if isinstance(frame, AudioFrame):
+            chunk = frame.samples
+            self._samples_fed = max(self._samples_fed, int(frame.t_end * self.sample_rate))
+        else:
+            chunk = frame
+            self._samples_fed += len(chunk)
         if chunk.ndim > 1:
             chunk = chunk.reshape(-1)
         if chunk.dtype != np.float32:
             chunk = chunk.astype(np.float32)
-        self._samples_fed += len(chunk)
+        item = frame if isinstance(frame, AudioFrame) else chunk
         try:
-            self._queue.put_nowait(chunk)
+            self._queue.put_nowait(item)
         except queue.Full:
             try:
                 self._queue.get_nowait()
             except queue.Empty:
                 pass
             try:
-                self._queue.put_nowait(chunk)
+                self._queue.put_nowait(item)
             except queue.Full:
                 pass
             if self.on_overflow is not None:
@@ -178,6 +197,8 @@ class Diarizer:
 
     def _worker(self) -> None:
         try:
+            from mlx_audio.vad import load as load_vad
+
             self._model = load_vad(self.model_name)
             state = self._model.init_streaming_state()
             proc = self._model._processor_config
@@ -187,6 +208,7 @@ class Diarizer:
             self._frame_duration = (proc.hop_length * subsampling_factor) / proc.sampling_rate
         except Exception as exc:
             print(f"Diarizer load failed: {exc}")
+            self._load_error = exc
             self._ready_event.set()
             return
         self._ready_event.set()
@@ -211,10 +233,16 @@ class Diarizer:
                 self._reset_event.set()
                 continue
 
-            chunk = item
-            chunk_real_dur = len(chunk) / self.sample_rate
-            chunk_real_start = real_processed_s
-            real_processed_s += chunk_real_dur
+            if isinstance(item, AudioFrame):
+                chunk = item.samples
+                chunk_real_start = item.t_start
+                chunk_real_dur = item.duration
+                real_processed_s = item.t_end
+            else:
+                chunk = item
+                chunk_real_dur = len(chunk) / self.sample_rate
+                chunk_real_start = real_processed_s
+                real_processed_s += chunk_real_dur
 
             try:
                 out, state = self._model.feed(

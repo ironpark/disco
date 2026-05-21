@@ -21,9 +21,8 @@ output replaces whatever the last partial showed.
 """
 
 import numpy as np
-from mlx_audio.stt import load as load_stt
 
-from disco.asr.transcriber import is_hallucination  # re-used; module-level helper
+from disco.asr.hallucination import is_hallucination
 
 
 def _delta_from_result(result) -> tuple[str, bool]:
@@ -189,6 +188,8 @@ class Qwen3Transcriber:
 
     def load(self) -> None:
         if self._model is None:
+            from mlx_audio.stt import load as load_stt
+
             print(f"Loading ASR model: {self.model_name}")
             self._model = load_stt(self.model_name)
             print("ASR model loaded!")
