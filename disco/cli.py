@@ -2,7 +2,6 @@
 
 import argparse
 
-from disco.audio.capture import list_devices as get_audio_devices
 from disco.config import ASRConfig
 
 
@@ -60,8 +59,11 @@ def parse_args() -> argparse.Namespace:
         "--asr-backend",
         type=str,
         default="voxtral",
-        choices=["voxtral", "qwen3-asr"],
-        help="ASR backend (default: voxtral — streaming; qwen3-asr is blob-based)",
+        choices=["voxtral", "qwen3-asr", "granite-speech"],
+        help=(
+            "ASR backend (default: voxtral — streaming; "
+            "qwen3-asr/granite-speech are blob-based)"
+        ),
     )
     parser.add_argument(
         "--asr-model",
@@ -96,6 +98,8 @@ def args_to_config(args: argparse.Namespace) -> ASRConfig:
 
 def print_devices() -> None:
     """Print available audio input devices."""
+    from disco.audio.capture import list_devices as get_audio_devices
+
     print("\nAvailable input devices:")
     print("-" * 50)
     devices = get_audio_devices()

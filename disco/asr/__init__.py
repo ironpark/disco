@@ -8,6 +8,7 @@ from disco.asr.hallucination import is_hallucination
 BACKEND_DEFAULT_MODELS = {
     "voxtral": "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit",
     "qwen3-asr": "mlx-community/Qwen3-ASR-1.7B-8bit",
+    "granite-speech": "ibm-granite/granite-speech-4.1-2b",
 }
 
 
@@ -23,7 +24,7 @@ def make_transcriber(
     ``backend`` selects the model family; ``model_name`` overrides the
     default checkpoint for that backend. Extra kwargs flow through to
     the concrete class (e.g. ``transcription_delay_ms`` for Voxtral,
-    ``language`` for Qwen3-ASR).
+    ``language`` for blob-style backends).
     """
     backend = backend.lower()
     name = model_name or BACKEND_DEFAULT_MODELS.get(backend)
@@ -41,6 +42,12 @@ def make_transcriber(
         from disco.asr.qwen import Qwen3Transcriber
 
         return Qwen3Transcriber(model_name=name, sample_rate=sample_rate, **kwargs)
+    if backend == "granite-speech":
+        from disco.asr.granite import GraniteSpeechTranscriber
+
+        return GraniteSpeechTranscriber(
+            model_name=name, sample_rate=sample_rate, **kwargs
+        )
     raise ValueError(f"Unsupported ASR backend: {backend!r}")
 
 
