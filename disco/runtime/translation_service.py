@@ -73,6 +73,7 @@ class TranslationService:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._pending_interims: dict[int, _InterimTranslationJob] = {}
+        self._finalized_utterance_ids: set[int] = set()
         self._last_interim_key: tuple[int, str] | None = None
         self._last_interim_emit_at = 0.0
 
@@ -101,6 +102,9 @@ class TranslationService:
             return
         job = _InterimTranslationJob(event=event)
         with self._lock:
+            if event.utterance_id in self._finalized_utterance_ids:
+                debug_log("translate", f"drop finalized interim utt={event.utterance_id}")
+                return
             self._pending_interims[job.utterance_id] = job
         self._updated.set()
 
@@ -110,6 +114,7 @@ class TranslationService:
             return
         with self._lock:
             for utterance_id in event.utterance_ids:
+                self._finalized_utterance_ids.add(utterance_id)
                 self._pending_interims.pop(utterance_id, None)
         self._finals.put((0, next(self._seq), _FinalTranslationJob(event=event)))
         self._updated.set()
@@ -136,7 +141,10 @@ class TranslationService:
                 continue
             if self._drain_one_final():
                 with self._lock:
-                    if event.utterance_id not in self._pending_interims:
+                    if (
+                        event.utterance_id not in self._finalized_utterance_ids
+                        and event.utterance_id not in self._pending_interims
+                    ):
                         job = _InterimTranslationJob(event=event)
                         self._pending_interims[job.utterance_id] = job
                         self._updated.set()
@@ -181,6 +189,8 @@ class TranslationService:
                     key=lambda item: item.event.span[1],
                 )
                 self._pending_interims.pop(job.utterance_id, None)
+                if job.utterance_id in self._finalized_utterance_ids:
+                    continue
                 if job.key != self._last_interim_key:
                     return job.event
             return None
@@ -189,8 +199,15 @@ class TranslationService:
         text = event.text.strip()
         key = (event.utterance_id, text)
         source_lang = LANG_CODE_MAP.get(self.language.lower(), "en")
+        with self._lock:
+            if event.utterance_id in self._finalized_utterance_ids:
+                debug_log("translate", f"drop finalized interim utt={event.utterance_id}")
+                return
         translation = self.translator.translate(text, source_lang)
         with self._lock:
+            if event.utterance_id in self._finalized_utterance_ids:
+                debug_log("translate", f"drop finalized interim utt={event.utterance_id}")
+                return
             current = self._pending_interims.get(event.utterance_id)
         if current is not None:
             if current.key != key:

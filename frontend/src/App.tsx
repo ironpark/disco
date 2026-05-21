@@ -150,6 +150,7 @@ function interimKey(message: InterimMessage) {
 }
 
 const emptyInterimState: InterimState = { byId: {}, fallback: [] };
+const finalizedInterimTtlMs = 30_000;
 
 function mergeInterimMessage(
   existing: InterimMessage | null,
@@ -231,10 +232,41 @@ function useDiscoSocket() {
   const setInterim = useSetAtom(interimAtom);
   const setError = useSetAtom(errorAtom);
   const retryRef = useRef<number | null>(null);
+  const finalizedInterimsRef = useRef<Map<number, number>>(new Map());
 
   useEffect(() => {
     let socket: WebSocket | null = null;
     let closed = false;
+
+    function pruneFinalizedInterims(now = Date.now()) {
+      for (const [utteranceId, finalizedAt] of finalizedInterimsRef.current) {
+        if (now - finalizedAt > finalizedInterimTtlMs) {
+          finalizedInterimsRef.current.delete(utteranceId);
+        }
+      }
+    }
+
+    function rememberFinalizedInterims(
+      data: Extract<ServerMessage, { type: "final" }>,
+    ) {
+      const ids =
+        data.utterance_ids ??
+        (data.utterance_id !== undefined ? [data.utterance_id] : []);
+      const now = Date.now();
+      pruneFinalizedInterims(now);
+      for (const utteranceId of ids) {
+        finalizedInterimsRef.current.set(utteranceId, now);
+      }
+    }
+
+    function wasRecentlyFinalized(utteranceId?: number) {
+      if (utteranceId === undefined) {
+        return false;
+      }
+      const now = Date.now();
+      pruneFinalizedInterims(now);
+      return finalizedInterimsRef.current.has(utteranceId);
+    }
 
     function connect() {
       setConnection("connecting");
@@ -256,10 +288,14 @@ function useDiscoSocket() {
           return;
         }
         if (data.type === "interim") {
+          if (data.translation && wasRecentlyFinalized(data.utterance_id)) {
+            return;
+          }
           setInterim((current) => upsertInterim(current, data));
           return;
         }
         if (data.type === "final") {
+          rememberFinalizedInterims(data);
           setInterim((current) => removeFinalizedInterims(current, data));
           setMessages((current) => [
             ...current,
