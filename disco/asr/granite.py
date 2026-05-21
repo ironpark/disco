@@ -137,10 +137,15 @@ class GraniteSpeechTranscriber:
 
     def load(self) -> None:
         if self._model is None:
+            import mlx.core as mx
             from mlx_audio.stt import load as load_stt
 
             print(f"Loading ASR model: {self.model_name}")
             self._model = load_stt(self.model_name)
+            fixed = self._fix_conv1d_weight_layout()
+            if fixed:
+                mx.eval(self._model.parameters())
+                print(f"Fixed Granite Conv1d weight layout ({fixed} tensors)")
             print("ASR model loaded!")
 
     @property
@@ -156,6 +161,26 @@ class GraniteSpeechTranscriber:
             interim_interval_s=self.interim_interval_s,
             language=self.language,
         )
+
+    def _fix_conv1d_weight_layout(self) -> int:
+        """Patch mlx-audio Granite 1x1 conv weights saved in PyTorch layout.
+
+        Some Granite checkpoints/load paths leave Conformer ``up_conv`` and
+        ``down_conv`` weights as ``(out, in, 1)``. MLX ``Conv1d`` expects
+        ``(out, kernel, in)``, so the first decode fails with a channel
+        mismatch like ``input: (..., 1024)`` vs ``weight: (4096, 1024, 1)``.
+        """
+        fixed = 0
+        for name, module in self._model.named_modules():
+            if not (name.endswith("up_conv") or name.endswith("down_conv")):
+                continue
+            weight = getattr(module, "weight", None)
+            if weight is None or len(weight.shape) != 3:
+                continue
+            if weight.shape[2] == 1 and weight.shape[1] != 1:
+                module.weight = weight.transpose(0, 2, 1)
+                fixed += 1
+        return fixed
 
 
 __all__ = ["GraniteSpeechSession", "GraniteSpeechTranscriber", "is_hallucination"]
