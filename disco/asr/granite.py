@@ -1,16 +1,11 @@
 """IBM Granite Speech backend via mlx-audio."""
 
 import time
+from collections.abc import Iterator
 
 import numpy as np
 
 from disco.asr.hallucination import is_hallucination
-
-
-def _text_from_result(result) -> str:
-    if isinstance(result, str):
-        return result
-    return getattr(result, "text", "") or ""
 
 
 class GraniteSpeechSession:
@@ -33,9 +28,9 @@ class GraniteSpeechSession:
         self._cur_samples = 0
         self._next_interim_at = int(self._interim_interval * sample_rate)
         self._text = ""
-        self._partial_text = ""
+        self._tokens: list[int] = []
         self._last_emit_at = 0.0
-        self._gen = None
+        self._gen: Iterator[int] | None = None
         self._gen_is_final = False
         self._closed = False
         self._done = False
@@ -84,13 +79,10 @@ class GraniteSpeechSession:
                 self._done = True
             return
         audio = np.concatenate(self._chunks)
-        gen_kwargs: dict = {"stream": True}
-        if self._language is not None:
-            gen_kwargs["language"] = self._language
         try:
-            self._gen = self._model.generate(audio, **gen_kwargs)
+            self._gen = self._token_stream(audio)
             self._gen_is_final = final
-            self._partial_text = ""
+            self._tokens = []
             self._last_emit_at = 0.0
         except Exception as exc:
             print(f"Granite Speech generate() failed: {exc}")
@@ -105,7 +97,7 @@ class GraniteSpeechSession:
             if self._gen_is_final:
                 self._done = True
             self._gen = None
-            return self._publish_partial(force=True)
+            return self._publish_tokens(force=True)
         except Exception as exc:
             print(f"Granite Speech decode error: {exc}")
             if self._gen_is_final:
@@ -113,13 +105,49 @@ class GraniteSpeechSession:
             self._gen = None
             return False
 
-        delta = _text_from_result(result)
-        if delta:
-            self._partial_text += delta
-        return self._publish_partial(force=False)
+        self._tokens.append(int(result))
+        return self._publish_tokens(force=False)
 
-    def _publish_partial(self, *, force: bool) -> bool:
-        text = self._partial_text.strip()
+    def _token_stream(self, audio: np.ndarray) -> Iterator[int]:
+        import mlx.core as mx
+        from mlx_lm.generate import generate_step
+        from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
+        prompt = None
+        if self._language is not None:
+            prompt = f"Translate the speech to {self._language}."
+
+        audio_data = self._model._load_audio(audio)
+        input_features, num_audio_tokens = self._model._extract_features(audio_data)
+        audio_features = self._model.get_audio_features(input_features)
+        mx.eval(audio_features)
+
+        prompt_ids = self._model._build_prompt(num_audio_tokens, prompt)
+        inputs_embeds = self._model._build_inputs_embeds(prompt_ids, audio_features)
+        mx.eval(inputs_embeds)
+
+        sampler = make_sampler(0.0, top_p=1.0, min_p=0.0, top_k=0)
+        logits_processors = make_logits_processors(
+            repetition_penalty=None,
+            repetition_context_size=100,
+        )
+        eos_token_id = self._model._tokenizer.eos_token_id
+
+        for token, _ in generate_step(
+            prompt=prompt_ids,
+            input_embeddings=inputs_embeds.squeeze(0),
+            model=self._model,
+            max_tokens=4096,
+            sampler=sampler,
+            logits_processors=logits_processors,
+            prefill_step_size=2048,
+        ):
+            if int(token) == eos_token_id:
+                break
+            yield int(token)
+
+    def _publish_tokens(self, *, force: bool) -> bool:
+        text = self._decode_tokens().strip()
         if not text or text == self._text:
             return False
         now = time.monotonic()
@@ -131,6 +159,12 @@ class GraniteSpeechSession:
         self._text = text
         self._last_emit_at = now
         return True
+
+    def _decode_tokens(self) -> str:
+        return self._model._tokenizer.decode(
+            self._tokens,
+            skip_special_tokens=True,
+        )
 
 
 class GraniteSpeechTranscriber:
