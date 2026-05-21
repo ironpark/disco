@@ -1,5 +1,7 @@
 """IBM Granite Speech backend via mlx-audio."""
 
+import time
+
 import numpy as np
 
 from disco.asr.hallucination import is_hallucination
@@ -20,16 +22,19 @@ class GraniteSpeechSession:
         sample_rate: int,
         interim_interval_s: float = 2.0,
         language: str | None = None,
+        emit_interval_s: float = 0.5,
     ):
         self._model = model
         self._sample_rate = sample_rate
         self._interim_interval = max(0.5, interim_interval_s)
+        self._emit_interval_s = max(0.1, emit_interval_s)
         self._language = language
         self._chunks: list[np.ndarray] = []
         self._cur_samples = 0
         self._next_interim_at = int(self._interim_interval * sample_rate)
         self._text = ""
         self._partial_text = ""
+        self._last_emit_at = 0.0
         self._gen = None
         self._gen_is_final = False
         self._closed = False
@@ -86,6 +91,7 @@ class GraniteSpeechSession:
             self._gen = self._model.generate(audio, **gen_kwargs)
             self._gen_is_final = final
             self._partial_text = ""
+            self._last_emit_at = 0.0
         except Exception as exc:
             print(f"Granite Speech generate() failed: {exc}")
             self._gen = None
@@ -99,11 +105,7 @@ class GraniteSpeechSession:
             if self._gen_is_final:
                 self._done = True
             self._gen = None
-            text = self._partial_text.strip()
-            if text and text != self._text:
-                self._text = text
-                return True
-            return False
+            return self._publish_partial(force=True)
         except Exception as exc:
             print(f"Granite Speech decode error: {exc}")
             if self._gen_is_final:
@@ -114,7 +116,21 @@ class GraniteSpeechSession:
         delta = _text_from_result(result)
         if delta:
             self._partial_text += delta
-        return False
+        return self._publish_partial(force=False)
+
+    def _publish_partial(self, *, force: bool) -> bool:
+        text = self._partial_text.strip()
+        if not text or text == self._text:
+            return False
+        now = time.monotonic()
+        throttled = (
+            self._last_emit_at and now - self._last_emit_at < self._emit_interval_s
+        )
+        if not force and throttled:
+            return False
+        self._text = text
+        self._last_emit_at = now
+        return True
 
 
 class GraniteSpeechTranscriber:
@@ -126,12 +142,14 @@ class GraniteSpeechTranscriber:
         sample_rate: int = 16000,
         language: str | None = None,
         interim_interval_s: float = 2.0,
+        emit_interval_s: float = 0.5,
         translate_speech: bool = False,
     ):
         self.model_name = model_name
         self.sample_rate = sample_rate
         self.language = language if translate_speech else None
         self.interim_interval_s = interim_interval_s
+        self.emit_interval_s = emit_interval_s
         self.translate_speech = translate_speech
         self._model = None
 
@@ -160,6 +178,7 @@ class GraniteSpeechTranscriber:
             self.sample_rate,
             interim_interval_s=self.interim_interval_s,
             language=self.language,
+            emit_interval_s=self.emit_interval_s,
         )
 
     def _fix_conv1d_weight_layout(self) -> int:
