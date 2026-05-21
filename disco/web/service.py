@@ -188,6 +188,7 @@ class PipelineService:
             "text": event.text,
             "span": event.span,
             "utterance_id": event.utterance_id,
+            "utterance_ids": event.utterance_ids,
         }
         if event.speaker is not None:
             msg["speaker"] = event.speaker

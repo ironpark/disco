@@ -96,6 +96,7 @@ class FinalEnricher:
             text=event.text,
             span=event.span,
             utterance_id=event.utterance_id,
+            utterance_ids=(event.utterance_id,),
             speaker=int(speaker) if speaker is not None else None,
         )
 
@@ -127,6 +128,10 @@ class FinalEnricher:
                 text=self._join_text(self._pending.text, event.text),
                 span=(self._pending.span[0], event.span[1]),
                 utterance_id=self._pending.utterance_id,
+                utterance_ids=self._merge_utterance_ids(
+                    self._pending.utterance_ids,
+                    event.utterance_ids,
+                ),
                 speaker=event.speaker,
             )
             return
@@ -157,3 +162,14 @@ class FinalEnricher:
         if self.language.lower() in {"japanese", "chinese", "korean"}:
             return f"{left}{right}"
         return f"{left} {right}"
+
+    def _merge_utterance_ids(
+        self,
+        left: tuple[int, ...],
+        right: tuple[int, ...],
+    ) -> tuple[int, ...]:
+        merged: list[int] = []
+        for utterance_id in (*left, *right):
+            if utterance_id not in merged:
+                merged.append(utterance_id)
+        return tuple(merged)

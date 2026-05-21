@@ -199,6 +199,7 @@ class TranslationService:
                 text=event.text,
                 span=event.span,
                 utterance_id=event.utterance_id,
+                utterance_ids=event.utterance_ids,
                 speaker=event.speaker,
                 translation=translation,
             )

@@ -14,6 +14,7 @@ export type TranscriptMessage = {
   translation?: string;
   span?: [number, number];
   utterance_id?: number;
+  utterance_ids?: number[];
   speaker?: number;
   time: string;
 };

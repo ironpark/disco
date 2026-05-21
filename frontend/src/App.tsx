@@ -46,6 +46,7 @@ type ServerMessage =
       text: string;
       span?: [number, number];
       utterance_id?: number;
+      utterance_ids?: number[];
       translation?: string;
       speaker?: number;
     }
@@ -95,10 +96,18 @@ function sameInterimTurn(
 
 function isFinalForInterim(
   message: Pick<InterimMessage, "span" | "speaker" | "utterance_id">,
-  final: Pick<TranscriptMessage, "span" | "speaker" | "utterance_id">,
+  final: Pick<
+    TranscriptMessage,
+    "span" | "speaker" | "utterance_id" | "utterance_ids"
+  >,
 ) {
-  if (message.utterance_id !== undefined && final.utterance_id !== undefined) {
-    return message.utterance_id === final.utterance_id;
+  if (message.utterance_id !== undefined) {
+    if (final.utterance_ids?.includes(message.utterance_id)) {
+      return true;
+    }
+    if (final.utterance_id === message.utterance_id) {
+      return true;
+    }
   }
 
   const messageStart = message.span?.[0];
@@ -111,9 +120,13 @@ function isFinalForInterim(
     finalStart !== undefined &&
     finalEnd !== undefined
   ) {
+    const sameSpeaker =
+      message.speaker === undefined ||
+      final.speaker === undefined ||
+      message.speaker === final.speaker;
     const overlap = Math.min(messageEnd, finalEnd) - Math.max(messageStart, finalStart);
     const closeStart = Math.abs(messageStart - finalStart) <= 0.75;
-    return overlap >= -0.15 || closeStart;
+    return sameSpeaker && (overlap >= -0.15 || closeStart);
   }
 
   return (
@@ -241,6 +254,7 @@ function useDiscoSocket() {
               translation: data.translation,
               span: data.span,
               utterance_id: data.utterance_id,
+              utterance_ids: data.utterance_ids,
               speaker: data.speaker,
               time: new Date().toLocaleTimeString([], {
                 hour: "2-digit",

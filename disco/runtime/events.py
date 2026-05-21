@@ -82,6 +82,7 @@ class LabeledFinal:
     text: str
     span: tuple[float, float]
     utterance_id: int
+    utterance_ids: tuple[int, ...]
     speaker: int | None = None
 
 
@@ -90,6 +91,7 @@ class EnrichedFinal:
     text: str
     span: tuple[float, float]
     utterance_id: int
+    utterance_ids: tuple[int, ...]
     speaker: int | None = None
     translation: str | None = None
 
