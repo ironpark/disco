@@ -16,14 +16,18 @@ from disco.runtime.events import (
     LabeledFinal,
     QueueOverflow,
     SpeakerActivity,
+    SpeakerBind,
     SpeakerChange,
     SpeechEnd,
     SpeechStart,
+    VadActivity,
     WorkerBackpressure,
 )
 from disco.runtime.translation_service import TranslationService
 from disco.runtime.transcriber_worker import TranscriberWorker
+from disco.runtime.turn_controller import TurnController
 from disco.translation.korean import KoreanTranslator
+from disco.vad import SileroVad, SmartTurnEndpoint
 
 if TYPE_CHECKING:
     from disco.asr.transcriber import Transcriber
@@ -34,12 +38,10 @@ class Runtime:
 
     Callers construct a Runtime with the loaded models and a bus, attach
     their own subscribers (Console, WebSocket, etc.), then call ``start``
-    with an ``AudioSource``. The runtime wires the diarizer as the sole
-    audio consumer that drives turn detection: each processed chunk emits
-    SpeakerActivity, the Coordinator turns that into SpeechStart/End/
-    SpeakerChange, and the TranscriberWorker opens/closes its session
-    accordingly. The diarizer also receives the audio for its own
-    cumulative segment store used at finalize time.
+    with an ``AudioSource``. The runtime wires VAD and diarizer as activity
+    sources: VAD drives speech boundaries, diarization drives speaker
+    attribution and speaker-change splits, and the TranscriberWorker
+    opens/closes sessions accordingly.
     """
 
     METRICS_INTERVAL_S = 10.0
@@ -51,17 +53,20 @@ class Runtime:
         transcriber: "Transcriber",
         diarizer: Diarizer,
         translator: KoreanTranslator | None = None,
+        smart_turn: SmartTurnEndpoint | None = None,
         language: str = "English",
         sample_rate: int = 16000,
         silence_duration: float = 0.5,
         min_utterance_duration: float = 0.5,
         speaker_change_hold: float = 0.4,
         same_speaker_bridge: float = 0.8,
+        max_utterance_duration: float = 10.0,
     ):
         self.bus = bus
         self.transcriber = transcriber
         self.diarizer = diarizer
         self.translator = translator
+        self.smart_turn = smart_turn
         self.language = language
         self.sample_rate = sample_rate
 
@@ -77,6 +82,20 @@ class Runtime:
                 all_speakers=all_spks,
             )
         )
+        self.vad = SileroVad(
+            sample_rate=sample_rate,
+            on_overflow=lambda depth: bus.publish(
+                QueueOverflow(component="vad", depth=depth)
+            ),
+            on_activity=lambda t_start, t_end, speech, confidence: bus.publish(
+                VadActivity(
+                    t_start=t_start,
+                    t_end=t_end,
+                    speech=speech,
+                    confidence=confidence,
+                )
+            )
+        )
 
         # Translate the configured durations into chunk counts at 100 ms /
         # chunk — matches AudioSource's default block size.
@@ -87,6 +106,11 @@ class Runtime:
             min_utterance_chunks=max(1, int(min_utterance_duration / block_s)),
             speaker_change_chunks=max(1, int(speaker_change_hold / block_s)),
             same_speaker_bridge_chunks=max(1, int(same_speaker_bridge / block_s)),
+            max_utterance_duration_s=max_utterance_duration,
+        )
+        self.turn_controller = TurnController(
+            bus=bus,
+            coordinator=self.coordinator,
         )
         self.transcriber_worker = TranscriberWorker(
             transcriber=transcriber,
@@ -115,26 +139,42 @@ class Runtime:
     def start(self, source: AudioSource) -> None:
         self._source = source
         self.transcriber_worker.set_ring_buffer(source.ring_buffer)
-
-        self.diarizer.start()
-        self.transcriber_worker.start()
-        self.enricher.start()
-        self.translation_service.start()
-
-        source.subscribe(self.diarizer)
-        source.subscribe(self.transcriber_worker)
+        if self.smart_turn is not None:
+            self.smart_turn.load()
+            self.coordinator.set_endpoint_complete(
+                lambda start_t, end_t: self.smart_turn.should_end(
+                    source.ring_buffer,
+                    start_t,
+                    end_t,
+                )
+            )
+        else:
+            self.coordinator.set_endpoint_complete(None)
 
         if not self._wired:
-            self.bus.subscribe(SpeakerActivity, self.coordinator.on_activity)
+            self.bus.subscribe(VadActivity, self.turn_controller.submit_vad)
+            self.bus.subscribe(SpeakerActivity, self.turn_controller.submit_speaker)
             self.bus.subscribe(SpeechStart, self._on_speech_start)
             self.bus.subscribe(SpeechEnd, self._on_speech_end)
             self.bus.subscribe(SpeakerChange, self._on_speaker_change)
+            self.bus.subscribe(SpeakerBind, self._on_speaker_bind)
             self.bus.subscribe(Interim, self._on_interim)
             self.bus.subscribe(Final, self._on_final)
             self.bus.subscribe(LabeledFinal, self._on_labeled_final)
             self.bus.subscribe(QueueOverflow, self._on_overflow)
             self.bus.subscribe(WorkerBackpressure, self._on_backpressure)
             self._wired = True
+
+        self.turn_controller.start()
+        self.diarizer.start()
+        self.vad.start()
+        self.transcriber_worker.start()
+        self.enricher.start()
+        self.translation_service.start()
+
+        source.subscribe(self.vad)
+        source.subscribe(self.diarizer)
+        source.subscribe(self.transcriber_worker)
 
         source.start()
 
@@ -153,15 +193,19 @@ class Runtime:
         if self._source is not None:
             self._source.stop()
             self._source = None
+        self.vad.stop()
+        self.diarizer.stop()
+        self.turn_controller.stop()
         self.transcriber_worker.stop()
         self.enricher.stop()
         self.translation_service.stop()
-        self.diarizer.stop()
 
     # ---- bus handlers ----
 
     def _on_speech_start(self, event: SpeechStart) -> None:
-        self.transcriber_worker.open_session(event.t, event.utterance_id)
+        self.transcriber_worker.open_session(
+            event.t, event.utterance_id, speaker=event.speaker
+        )
 
     def _on_speech_end(self, event: SpeechEnd) -> None:
         self.transcriber_worker.close_session(event.t, event.utterance_id)
@@ -172,7 +216,12 @@ class Runtime:
         # case where the new _Open arrives while the previous session is
         # still draining.
         self.transcriber_worker.close_session(event.t, event.utterance_id)
-        self.transcriber_worker.open_session(event.t, event.next_utterance_id)
+        self.transcriber_worker.open_session(
+            event.t, event.next_utterance_id, speaker=event.to_speaker
+        )
+
+    def _on_speaker_bind(self, event: SpeakerBind) -> None:
+        self.transcriber_worker.bind_speaker(event.utterance_id, event.speaker)
 
     def _on_interim(self, event: Interim) -> None:
         self.translation_service.submit_interim(event)
@@ -195,10 +244,12 @@ class Runtime:
     def _metrics_loop(self) -> None:
         while not self._metrics_stop.wait(self.METRICS_INTERVAL_S):
             tw = self.transcriber_worker.snapshot()
+            turns = self.turn_controller.snapshot()
             diar_depth = self.diarizer._queue.qsize()
             print(
                 f"[metrics] queues: transcriber={tw['queue_depth']} "
-                f"diarizer={diar_depth} drains={tw['draining_count']} "
+                f"turns={turns['queue_depth']} diarizer={diar_depth} "
+                f"drains={tw['draining_count']} "
                 f"oldest_drain={tw['oldest_drain_age']:.2f}s "
                 f"t={time.strftime('%H:%M:%S')}"
             )

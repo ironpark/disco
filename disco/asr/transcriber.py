@@ -5,6 +5,20 @@ import numpy as np
 from disco.asr.hallucination import is_hallucination
 
 
+def _normalize_audio(samples: np.ndarray) -> np.ndarray:
+    if samples.ndim > 1:
+        samples = samples.reshape(-1)
+    if samples.dtype != np.float32:
+        samples = samples.astype(np.float32)
+    return samples
+
+
+def _result_text(result) -> str:
+    if isinstance(result, str):
+        return result
+    return getattr(result, "text", "") or ""
+
+
 class StreamingTranscription:
     """One streaming utterance.
 
@@ -26,11 +40,7 @@ class StreamingTranscription:
         return self._session.done
 
     def feed(self, samples: np.ndarray) -> None:
-        if samples.ndim > 1:
-            samples = samples.reshape(-1)
-        if samples.dtype != np.float32:
-            samples = samples.astype(np.float32)
-        self._session.feed(samples)
+        self._session.feed(_normalize_audio(samples))
 
     def step(self) -> bool:
         """Decode up to ``max_decode_tokens`` tokens; return True if text changed."""
@@ -102,3 +112,15 @@ class Transcriber:
             transcription_delay_ms=self.transcription_delay_ms,
         )
         return StreamingTranscription(session, max_decode_tokens=self.max_decode_tokens)
+
+    def transcribe_once(self, samples: np.ndarray) -> str:
+        """Transcribe a complete audio span without streaming session state."""
+        result = self.model.generate(
+            _normalize_audio(samples),
+            max_tokens=4096,
+            temperature=0.0,
+            verbose=False,
+            stream=False,
+            transcription_delay_ms=self.transcription_delay_ms,
+        )
+        return _result_text(result).strip()

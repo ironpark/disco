@@ -22,6 +22,10 @@ def set_config(
     min_utterance_duration: float = 0.5,
     asr_backend: str = "voxtral",
     model_name: str | None = None,
+    translation_model: str | None = None,
+    smart_turn: bool = False,
+    smart_turn_model: str = "mlx-community/smart-turn-v3",
+    smart_turn_threshold: float = 0.5,
 ):
     pipeline.set_config(
         device=device,
@@ -31,6 +35,10 @@ def set_config(
         min_utterance_duration=min_utterance_duration,
         asr_backend=asr_backend,
         model_name=model_name,
+        translation_model=translation_model,
+        smart_turn=smart_turn,
+        smart_turn_model=smart_turn_model,
+        smart_turn_threshold=smart_turn_threshold,
     )
 
 

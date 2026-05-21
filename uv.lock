@@ -156,7 +156,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = "==0.128.0" },
-    { name = "mlx-audio", specifier = ">=0.4.3" },
+    { name = "mlx-audio", git = "https://github.com/Blaizzy/mlx-audio.git?rev=main" },
     { name = "mlx-lm", specifier = ">=0.30.5" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "python-multipart", specifier = ">=0.0.9" },
@@ -463,7 +463,7 @@ wheels = [
 [[package]]
 name = "mlx-audio"
 version = "0.4.3"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/Blaizzy/mlx-audio.git?rev=main#60a223e3c3c84fead9426f5d47fa9d985ec4fad5" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "miniaudio" },
@@ -474,10 +474,6 @@ dependencies = [
     { name = "sounddevice" },
     { name = "tqdm" },
     { name = "transformers" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/95/db/a9f95e3794eca373d681220c8b9f8f84451a0d14959f85cc341ca592394c/mlx_audio-0.4.3.tar.gz", hash = "sha256:8e87badf56a0f73bf91e3797b1195c01440a181cf0b64a2a08dc1bda4b037f54", size = 1144947, upload-time = "2026-04-28T20:18:12.09Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/25/0a89073ed7b7cdf34299042bd03d867c12c0c8b43f597be61bea7f146793/mlx_audio-0.4.3-py3-none-any.whl", hash = "sha256:6b87bf42d79d9ceb6b9310a77656b9b76429c2d6ddd89f634b2786c58a2e4721", size = 1373582, upload-time = "2026-04-28T20:18:10.512Z" },
 ]
 
 [[package]]

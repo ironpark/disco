@@ -9,9 +9,16 @@ from fastapi import WebSocket
 from disco.asr import make_transcriber
 from disco.audio.source import AudioSource
 from disco.diar import Diarizer
-from disco.runtime.events import EnrichedFinal, EnrichedInterim, EventBus, Interim
+from disco.runtime.events import (
+    EnrichedFinal,
+    EnrichedInterim,
+    EventBus,
+    FinalDiscarded,
+    Interim,
+)
 from disco.runtime.runtime import Runtime
 from disco.translation import KoreanTranslator
+from disco.vad import SmartTurnEndpoint
 
 
 @dataclass
@@ -23,8 +30,13 @@ class AppConfig:
     sample_rate: int = 16000
     min_utterance_duration: float = 0.5
     speaker_change_hold: float = 0.4
+    max_utterance_duration: float = 10.0
     asr_backend: str = "voxtral"
     model_name: str | None = None
+    translation_model: str | None = None
+    smart_turn: bool = False
+    smart_turn_model: str = "mlx-community/smart-turn-v3"
+    smart_turn_threshold: float = 0.5
 
 
 @dataclass
@@ -82,6 +94,10 @@ class PipelineService:
         min_utterance_duration: float = 0.5,
         asr_backend: str = "voxtral",
         model_name: str | None = None,
+        translation_model: str | None = None,
+        smart_turn: bool = False,
+        smart_turn_model: str = "mlx-community/smart-turn-v3",
+        smart_turn_threshold: float = 0.5,
     ) -> None:
         self.config = AppConfig(
             device=device,
@@ -91,6 +107,10 @@ class PipelineService:
             min_utterance_duration=min_utterance_duration,
             asr_backend=asr_backend,
             model_name=model_name,
+            translation_model=translation_model,
+            smart_turn=smart_turn,
+            smart_turn_model=smart_turn_model,
+            smart_turn_threshold=smart_turn_threshold,
         )
 
     def config_payload(self) -> dict:
@@ -98,6 +118,7 @@ class PipelineService:
             "language": self.config.language,
             "translate_korean": self.config.translate_korean,
             "is_recording": self.is_recording,
+            "smart_turn": self.config.smart_turn,
         }
 
     def start(self) -> str:
@@ -136,13 +157,28 @@ class PipelineService:
             language=cfg.language,
         )
         diarizer = Diarizer(sample_rate=cfg.sample_rate)
-        translator = KoreanTranslator() if cfg.translate_korean else None
+        translator = None
+        if cfg.translate_korean:
+            model_name = cfg.translation_model
+            translator = (
+                KoreanTranslator(model_name=model_name)
+                if model_name is not None
+                else KoreanTranslator()
+            )
         if translator is not None:
             translator.load()
+        smart_turn = None
+        if cfg.smart_turn:
+            smart_turn = SmartTurnEndpoint(
+                model_name=cfg.smart_turn_model,
+                sample_rate=cfg.sample_rate,
+                threshold=cfg.smart_turn_threshold,
+            )
 
         bus = EventBus()
         bus.subscribe(Interim, self._on_interim)
         bus.subscribe(EnrichedInterim, self._on_enriched_interim)
+        bus.subscribe(FinalDiscarded, self._on_final_discarded)
         bus.subscribe(EnrichedFinal, self._on_final)
 
         self.bus = bus
@@ -151,11 +187,13 @@ class PipelineService:
             transcriber=transcriber,
             diarizer=diarizer,
             translator=translator,
+            smart_turn=smart_turn,
             language=cfg.language,
             sample_rate=cfg.sample_rate,
             silence_duration=cfg.silence_duration,
             min_utterance_duration=cfg.min_utterance_duration,
             speaker_change_hold=cfg.speaker_change_hold,
+            max_utterance_duration=cfg.max_utterance_duration,
         )
 
     def _on_interim(self, event: Interim) -> None:
@@ -194,4 +232,15 @@ class PipelineService:
             msg["speaker"] = event.speaker
         if event.translation is not None:
             msg["translation"] = event.translation
+        self.connections.schedule(msg)
+
+    def _on_final_discarded(self, event: FinalDiscarded) -> None:
+        msg: dict = {
+            "type": "final_discarded",
+            "span": event.span,
+            "utterance_id": event.utterance_id,
+            "reason": event.reason,
+        }
+        if event.speaker is not None:
+            msg["speaker"] = event.speaker
         self.connections.schedule(msg)

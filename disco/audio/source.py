@@ -61,7 +61,9 @@ class AudioSource:
         # Copy once; consumers may queue references for later processing.
         samples = indata.copy()
         if samples.ndim > 1:
-            samples = samples.reshape(-1)
+            samples = (
+                samples[:, 0] if samples.shape[1] == 1 else samples.mean(axis=1)
+            )
         t_start = self._samples_seen / self.sample_rate
         self._samples_seen += len(samples)
         frame = AudioFrame(

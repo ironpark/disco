@@ -60,6 +60,29 @@ def parse_args() -> argparse.Namespace:
         help="Override the backend's default model checkpoint",
     )
     parser.add_argument(
+        "--translation-model",
+        type=str,
+        default=None,
+        help="Override the Korean translation model checkpoint",
+    )
+    parser.add_argument(
+        "--smart-turn",
+        action="store_true",
+        help="Use Smart Turn to confirm VAD silence endpoints",
+    )
+    parser.add_argument(
+        "--smart-turn-model",
+        type=str,
+        default="mlx-community/smart-turn-v3",
+        help="Smart Turn model checkpoint",
+    )
+    parser.add_argument(
+        "--smart-turn-threshold",
+        type=float,
+        default=0.5,
+        help="Smart Turn endpoint threshold",
+    )
+    parser.add_argument(
         "--host",
         type=str,
         default="127.0.0.1",
@@ -109,6 +132,10 @@ def main():
         min_utterance_duration=args.min_utterance_duration,
         asr_backend=args.asr_backend,
         model_name=args.asr_model,
+        translation_model=args.translation_model,
+        smart_turn=args.smart_turn,
+        smart_turn_model=args.smart_turn_model,
+        smart_turn_threshold=args.smart_turn_threshold,
     )
 
     if args.device is not None:
@@ -119,6 +146,10 @@ def main():
     print(f"  Language: {args.language}")
     if args.translate_korean:
         print(f"  Translation: Korean")
+        if args.translation_model is not None:
+            print(f"  Translation model: {args.translation_model}")
+    if args.smart_turn:
+        print(f"  Smart Turn: {args.smart_turn_model}")
     print(f"\n  Open http://{args.host}:{args.port} in your browser\n")
 
     uvicorn.run(app, host=args.host, port=args.port)

@@ -52,6 +52,13 @@ type ServerMessage =
       translation?: string;
       speaker?: number;
     }
+  | {
+      type: "final_discarded";
+      span?: [number, number];
+      utterance_id?: number;
+      speaker?: number;
+      reason?: string;
+    }
   | { type: "pong" };
 
 const speakerPalette = [
@@ -208,12 +215,15 @@ function upsertInterim(
 
 function removeFinalizedInterims(
   current: InterimState,
-  data: Extract<ServerMessage, { type: "final" }>,
+  data: Extract<ServerMessage, { type: "final" | "final_discarded" }>,
 ): InterimState {
   const byId = { ...current.byId };
   const ids =
-    data.utterance_ids ??
-    (data.utterance_id !== undefined ? [data.utterance_id] : []);
+    "utterance_ids" in data && data.utterance_ids !== undefined
+      ? data.utterance_ids
+      : data.utterance_id !== undefined
+        ? [data.utterance_id]
+        : [];
   for (const id of ids) {
     delete byId[String(id)];
   }
@@ -247,11 +257,14 @@ function useDiscoSocket() {
     }
 
     function rememberFinalizedInterims(
-      data: Extract<ServerMessage, { type: "final" }>,
+      data: Extract<ServerMessage, { type: "final" | "final_discarded" }>,
     ) {
       const ids =
-        data.utterance_ids ??
-        (data.utterance_id !== undefined ? [data.utterance_id] : []);
+        "utterance_ids" in data && data.utterance_ids !== undefined
+          ? data.utterance_ids
+          : data.utterance_id !== undefined
+            ? [data.utterance_id]
+            : [];
       const now = Date.now();
       pruneFinalizedInterims(now);
       for (const utteranceId of ids) {
@@ -284,6 +297,7 @@ function useDiscoSocket() {
             language: data.language,
             translate_korean: data.translate_korean,
             is_recording: data.is_recording,
+            smart_turn: data.smart_turn,
           });
           return;
         }
@@ -317,6 +331,11 @@ function useDiscoSocket() {
               }),
             },
           ]);
+          return;
+        }
+        if (data.type === "final_discarded") {
+          rememberFinalizedInterims(data);
+          setInterim((current) => removeFinalizedInterims(current, data));
         }
       };
 

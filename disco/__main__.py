@@ -11,6 +11,7 @@ from disco.output import ConsoleOutput
 from disco.runtime.events import EnrichedFinal, EventBus, Interim
 from disco.runtime.runtime import Runtime
 from disco.translation import KoreanTranslator
+from disco.vad import SmartTurnEndpoint
 
 
 def main() -> None:
@@ -33,9 +34,23 @@ def main() -> None:
         language=config.language,
     )
     diarizer = Diarizer(sample_rate=config.sample_rate)
-    translator = KoreanTranslator() if config.translate_to_korean else None
+    translator = None
+    if config.translate_to_korean:
+        model_name = config.translation_model
+        translator = (
+            KoreanTranslator(model_name=model_name)
+            if model_name is not None
+            else KoreanTranslator()
+        )
     if translator is not None:
         translator.load()
+    smart_turn = None
+    if config.smart_turn:
+        smart_turn = SmartTurnEndpoint(
+            model_name=config.smart_turn_model,
+            sample_rate=config.sample_rate,
+            threshold=config.smart_turn_threshold,
+        )
 
     output = ConsoleOutput(show_translation=config.translate_to_korean)
 
@@ -51,10 +66,12 @@ def main() -> None:
         transcriber=transcriber,
         diarizer=diarizer,
         translator=translator,
+        smart_turn=smart_turn,
         language=config.language,
         sample_rate=config.sample_rate,
         silence_duration=config.silence_duration,
         min_utterance_duration=config.chunk_duration,
+        max_utterance_duration=config.max_utterance_duration,
     )
 
     output.show_start(config.language, translate=config.translate_to_korean)

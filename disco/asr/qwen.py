@@ -208,5 +208,19 @@ class Qwen3Transcriber:
             interim_interval_s=self.interim_interval_s,
         )
 
+    def transcribe_once(self, samples: np.ndarray) -> str:
+        """Transcribe a complete audio span in one model call."""
+        if samples.ndim > 1:
+            samples = samples.reshape(-1)
+        if samples.dtype != np.float32:
+            samples = samples.astype(np.float32)
+        kwargs: dict = {"stream": False}
+        if self.language is not None:
+            kwargs["language"] = self.language
+        result = self.model.generate(samples, **kwargs)
+        if isinstance(result, str):
+            return result.strip()
+        return (getattr(result, "text", "") or "").strip()
+
 
 __all__ = ["Qwen3Transcriber", "QwenSession", "is_hallucination"]

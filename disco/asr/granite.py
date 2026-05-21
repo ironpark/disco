@@ -215,6 +215,14 @@ class GraniteSpeechTranscriber:
             emit_interval_s=self.emit_interval_s,
         )
 
+    def transcribe_once(self, samples: np.ndarray) -> str:
+        """Transcribe a complete audio span using a fresh blob-style session."""
+        session = self.start_session()
+        session.feed(samples)
+        session.close()
+        session.drain()
+        return session.text.strip()
+
     def _fix_conv1d_weight_layout(self) -> int:
         """Patch mlx-audio Granite 1x1 conv weights saved in PyTorch layout.
 

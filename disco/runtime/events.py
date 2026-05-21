@@ -72,15 +72,27 @@ class SpeakerActivity:
 
 
 @dataclass(frozen=True)
+class VadActivity:
+    """Speech activity from a VAD on the shared audio clock."""
+
+    t_start: float
+    t_end: float
+    speech: bool
+    confidence: float | None = None
+
+
+@dataclass(frozen=True)
 class SpeechStart:
     t: float
     utterance_id: int
+    speaker: int | None = None
 
 
 @dataclass(frozen=True)
 class SpeechEnd:
     t: float
     utterance_id: int
+    speaker: int | None = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +104,14 @@ class SpeakerChange:
     t: float
     utterance_id: int
     next_utterance_id: int
+
+
+@dataclass(frozen=True)
+class SpeakerBind:
+    """Late speaker attribution for an already-open utterance."""
+
+    utterance_id: int
+    speaker: int
 
 
 @dataclass(frozen=True)
@@ -113,11 +133,22 @@ class EnrichedInterim:
 
 @dataclass(frozen=True)
 class Final:
-    """Raw final emitted by the transcriber worker; no speaker/translation yet."""
+    """Raw final emitted by the transcriber worker; no translation yet."""
 
     text: str
     span: tuple[float, float]
     utterance_id: int
+    speaker: int | None = None
+
+
+@dataclass(frozen=True)
+class FinalDiscarded:
+    """A turn finalized without user-visible transcript text."""
+
+    span: tuple[float, float]
+    utterance_id: int
+    speaker: int | None = None
+    reason: str = "empty"
 
 
 @dataclass(frozen=True)

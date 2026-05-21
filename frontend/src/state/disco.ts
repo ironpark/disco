@@ -6,6 +6,7 @@ export type AppConfig = {
   language: string;
   translate_korean: boolean;
   is_recording: boolean;
+  smart_turn?: boolean;
 };
 
 export type TranscriptMessage = {

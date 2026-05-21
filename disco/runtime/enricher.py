@@ -12,7 +12,7 @@ _STOP = object()
 
 
 class FinalEnricher:
-    """Serially attaches speaker labels and merges adjacent finals."""
+    """Serially validates speaker labels and merges adjacent finals."""
 
     def __init__(
         self,
@@ -81,13 +81,15 @@ class FinalEnricher:
 
     def _enrich(self, event: Final) -> LabeledFinal:
         t_start, t_end = event.span
-        speaker = self.diarizer.dominant_speaker_in(t_start, t_end)
+        diar_speaker = self.diarizer.dominant_speaker_in(t_start, t_end)
+        speaker = event.speaker if event.speaker is not None else diar_speaker
         diar_now = self.diarizer.elapsed_seconds()
         debug_log(
             "enrich",
             f"Final span=({t_start:.2f},{t_end:.2f})",
             f"utt={event.utterance_id}",
             f"speaker={'S' + str(speaker) if speaker is not None else '?'}",
+            f"diar={'S' + str(diar_speaker) if diar_speaker is not None else '?'}",
             f"diar_now={diar_now:.2f}s",
             f"text={event.text[:40]!r}",
         )

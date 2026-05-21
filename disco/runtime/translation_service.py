@@ -3,6 +3,7 @@
 import queue
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from itertools import count
 
@@ -15,7 +16,7 @@ from disco.runtime.events import (
     Interim,
     LabeledFinal,
 )
-from disco.translation.korean import KoreanTranslator
+from disco.translation.korean import KoreanTranslator, TranslationContextItem
 
 
 _STOP = object()
@@ -59,12 +60,16 @@ class TranslationService:
         language: str = "English",
         interim_interval_s: float = 1.0,
         interim_min_chars: int = 8,
+        final_context_size: int = 5,
+        interim_context_size: int = 3,
     ):
         self.bus = bus
         self.translator = translator
         self.language = language
         self.interim_interval_s = interim_interval_s
         self.interim_min_chars = interim_min_chars
+        self.final_context_size = final_context_size
+        self.interim_context_size = interim_context_size
 
         self._finals: queue.PriorityQueue = queue.PriorityQueue()
         self._seq = count()
@@ -76,6 +81,7 @@ class TranslationService:
         self._finalized_utterance_ids: set[int] = set()
         self._last_interim_key: tuple[int, str] | None = None
         self._last_interim_emit_at = 0.0
+        self._context: deque[TranslationContextItem] = deque(maxlen=final_context_size)
 
     def start(self) -> None:
         if self._thread is not None:
@@ -167,9 +173,15 @@ class TranslationService:
 
         event = item.event
         source_lang = LANG_CODE_MAP.get(self.language.lower(), "en")
+        context = self._context_snapshot(limit=self.final_context_size)
         translation: str | None = None
         try:
-            translation = self.translator.translate(event.text, source_lang)
+            translation = self.translator.translate(
+                event.text,
+                source_lang,
+                context=context,
+                mode="final",
+            )
         except Exception as exc:
             print(f"Translation error: {exc}")
         debug_log(
@@ -179,6 +191,7 @@ class TranslationService:
             f"text={event.text[:40]!r}",
         )
         self._publish_final(event, translation=translation)
+        self._remember_context(event, translation=translation)
         return True
 
     def _take_latest_interim(self) -> Interim | None:
@@ -203,7 +216,13 @@ class TranslationService:
             if event.utterance_id in self._finalized_utterance_ids:
                 debug_log("translate", f"drop finalized interim utt={event.utterance_id}")
                 return
-        translation = self.translator.translate(text, source_lang)
+        context = self._context_snapshot(limit=self.interim_context_size)
+        translation = self.translator.translate(
+            text,
+            source_lang,
+            context=context,
+            mode="interim",
+        )
         with self._lock:
             if event.utterance_id in self._finalized_utterance_ids:
                 debug_log("translate", f"drop finalized interim utt={event.utterance_id}")
@@ -242,3 +261,28 @@ class TranslationService:
                 translation=translation,
             )
         )
+
+    def _context_snapshot(
+        self, *, limit: int
+    ) -> tuple[TranslationContextItem, ...]:
+        with self._lock:
+            if limit <= 0:
+                return ()
+            items = list(self._context)[-limit:]
+        return tuple(items)
+
+    def _remember_context(
+        self, event: LabeledFinal, *, translation: str | None
+    ) -> None:
+        text = " ".join(event.text.split())
+        translated = " ".join((translation or "").split())
+        if not text or not translated or translated.startswith("[Translation error:"):
+            return
+        with self._lock:
+            self._context.append(
+                TranslationContextItem(
+                    speaker=event.speaker,
+                    text=text,
+                    translation=translated,
+                )
+            )

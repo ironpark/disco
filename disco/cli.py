@@ -44,6 +44,12 @@ def parse_args() -> argparse.Namespace:
         help="Silence duration to trigger transcription (seconds)",
     )
     parser.add_argument(
+        "--max-utterance-duration",
+        type=float,
+        default=10.0,
+        help="Force a turn split after this many seconds of continuous speech",
+    )
+    parser.add_argument(
         "--language",
         type=str,
         default="English",
@@ -71,6 +77,29 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override the backend's default model checkpoint",
     )
+    parser.add_argument(
+        "--translation-model",
+        type=str,
+        default=None,
+        help="Override the Korean translation model checkpoint",
+    )
+    parser.add_argument(
+        "--smart-turn",
+        action="store_true",
+        help="Use Smart Turn to confirm VAD silence endpoints",
+    )
+    parser.add_argument(
+        "--smart-turn-model",
+        type=str,
+        default="mlx-community/smart-turn-v3",
+        help="Smart Turn model checkpoint",
+    )
+    parser.add_argument(
+        "--smart-turn-threshold",
+        type=float,
+        default=0.5,
+        help="Smart Turn endpoint threshold",
+    )
 
     return parser.parse_args()
 
@@ -89,10 +118,15 @@ def args_to_config(args: argparse.Namespace) -> ASRConfig:
         chunk_duration=args.chunk_duration,
         silence_threshold=args.silence_threshold,
         silence_duration=args.silence_duration,
+        max_utterance_duration=args.max_utterance_duration,
         language=args.language,
         translate_to_korean=args.translate_korean,
         asr_backend=args.asr_backend,
         model_name=args.asr_model,
+        translation_model=args.translation_model,
+        smart_turn=args.smart_turn,
+        smart_turn_model=args.smart_turn_model,
+        smart_turn_threshold=args.smart_turn_threshold,
     )
 
 
