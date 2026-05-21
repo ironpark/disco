@@ -27,6 +27,7 @@ import {
   messagesAtom,
   statsAtom,
   type AppConfig,
+  type InterimMessage,
   type TranscriptMessage,
 } from "@/state/disco";
 
@@ -73,6 +74,35 @@ function wsUrl() {
   return `${protocol}//${window.location.host}/ws`;
 }
 
+function sameInterimTurn(
+  message: Pick<InterimMessage, "span" | "speaker" | "utterance_id">,
+  incoming: Pick<InterimMessage, "span" | "speaker" | "utterance_id">,
+) {
+  if (message.utterance_id !== undefined && incoming.utterance_id !== undefined) {
+    return message.utterance_id === incoming.utterance_id;
+  }
+  const messageStart = message.span?.[0];
+  const incomingStart = incoming.span?.[0];
+  if (messageStart !== undefined && incomingStart !== undefined) {
+    return Math.abs(messageStart - incomingStart) <= 0.25;
+  }
+  return (
+    message.speaker !== undefined &&
+    incoming.speaker !== undefined &&
+    message.speaker === incoming.speaker
+  );
+}
+
+function interimKey(message: InterimMessage) {
+  if (message.utterance_id !== undefined) {
+    return `utt-${message.utterance_id}`;
+  }
+  if (message.span !== undefined) {
+    return `span-${message.span[0].toFixed(2)}`;
+  }
+  return `speaker-${message.speaker ?? "unknown"}`;
+}
+
 function useDiscoSocket() {
   const setConfig = useSetAtom(configAtom);
   const setConnection = useSetAtom(connectionStatusAtom);
@@ -106,69 +136,69 @@ function useDiscoSocket() {
         }
         if (data.type === "interim") {
           setInterim((current) => {
-            if (
-              data.translation &&
-              current?.utterance_id !== undefined &&
-              data.utterance_id !== undefined &&
-              current.utterance_id !== data.utterance_id
-            ) {
-              return current;
-            }
-
+            const existingIndex = current.findIndex((message) =>
+              sameInterimTurn(message, data),
+            );
+            const existing = existingIndex >= 0 ? current[existingIndex] : null;
             const incomingStart = data.span?.[0];
             const incomingEnd = data.span?.[1] ?? Number.POSITIVE_INFINITY;
-            const currentStart = current?.span?.[0];
-            const currentEnd = current?.span?.[1] ?? Number.NEGATIVE_INFINITY;
+            const currentStart = existing?.span?.[0];
+            const currentEnd = existing?.span?.[1] ?? Number.NEGATIVE_INFINITY;
             const hasStableUtteranceIds =
               data.utterance_id !== undefined &&
-              current?.utterance_id !== undefined;
+              existing?.utterance_id !== undefined;
             const isNewUtterance =
-              current !== null &&
+              existing !== null &&
               (hasStableUtteranceIds
-                ? data.utterance_id !== current.utterance_id
+                ? data.utterance_id !== existing.utterance_id
                 : (incomingStart !== undefined &&
                     currentStart !== undefined &&
                     Math.abs(incomingStart - currentStart) > 0.25) ||
                   (data.speaker !== undefined &&
-                    current.speaker !== undefined &&
-                    data.speaker !== current.speaker) ||
+                    existing.speaker !== undefined &&
+                    data.speaker !== existing.speaker) ||
                   (!data.translation &&
-                    current.text.length > 0 &&
-                    data.text.length + 3 < current.text.length));
+                    existing.text.length > 0 &&
+                    data.text.length + 3 < existing.text.length));
 
             if (
               data.translation &&
-              current &&
+              existing &&
               !isNewUtterance &&
               incomingEnd < currentEnd
             ) {
-              return {
-                ...current,
+              const next = [...current];
+              next[existingIndex] = {
+                ...existing,
                 translation: data.translation,
               };
+              return next;
             }
 
-            return {
+            const nextMessage: InterimMessage = {
               text: data.text,
               span: data.span,
               utterance_id: data.utterance_id,
               speaker: data.speaker,
               translation:
-                data.translation ?? (isNewUtterance ? undefined : current?.translation),
+                data.translation ??
+                (isNewUtterance ? undefined : existing?.translation),
             };
+
+            if (existingIndex < 0) {
+              return [...current, nextMessage].sort(
+                (left, right) => (left.span?.[0] ?? 0) - (right.span?.[0] ?? 0),
+              );
+            }
+            const next = [...current];
+            next[existingIndex] = nextMessage;
+            return next;
           });
           return;
         }
         if (data.type === "final") {
           setInterim((current) => {
-            if (
-              current?.utterance_id !== undefined &&
-              data.utterance_id !== undefined &&
-              current.utterance_id !== data.utterance_id
-            ) {
-              return current;
-            }
-            return null;
+            return current.filter((message) => !sameInterimTurn(message, data));
           });
           setMessages((current) => [
             ...current,
@@ -283,7 +313,7 @@ function MessageRow({
 
 function TranscriptPanel() {
   const messages = useAtomValue(messagesAtom);
-  const interim = useAtomValue(interimAtom);
+  const interims = useAtomValue(interimAtom);
   const viewportRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -291,7 +321,7 @@ function TranscriptPanel() {
       "[data-radix-scroll-area-viewport]",
     );
     viewport?.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
-  }, [messages, interim]);
+  }, [messages, interims]);
 
   return (
     <Card className="min-h-0 flex-1 overflow-hidden border-zinc-800 bg-zinc-950/70">
@@ -307,7 +337,7 @@ function TranscriptPanel() {
       <CardContent className="h-full min-h-0 p-0">
         <ScrollArea ref={viewportRef} className="h-[calc(100vh-13.5rem)]">
           <div className="flex flex-col gap-3 p-4">
-            {messages.length === 0 && !interim && (
+            {messages.length === 0 && interims.length === 0 && (
               <div className="grid min-h-[22rem] place-items-center text-center">
                 <div>
                   <div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900">
@@ -332,32 +362,35 @@ function TranscriptPanel() {
                 <MessageRow key={message.id} message={message} compact={compact} />
               );
             })}
-            {interim && (
-              <article className="rounded-lg border border-dashed border-cyan-500/30 bg-cyan-500/5 px-4 py-3">
-                <div className="mb-2 flex items-center gap-2">
-                  <span
-                    className={cn(
-                      "inline-flex h-6 items-center rounded-md px-2 text-xs font-medium ring-1",
-                      speakerClass(interim.speaker),
-                    )}
-                  >
-                    {speakerLabel(interim.speaker)}
-                  </span>
-                  <Loader2 className="size-3.5 animate-spin text-cyan-300" />
-                </div>
-                <p className="text-[0.95rem] leading-6 text-zinc-300">
-                  {interim.text}
-                </p>
-                {interim.translation && (
-                  <>
-                    <Separator className="my-3 bg-cyan-500/20" />
-                    <p className="text-[0.92rem] leading-6 text-cyan-200">
-                      {interim.translation}
-                    </p>
-                  </>
-                )}
-              </article>
-            )}
+            {interims.map((interim) => (
+              <article
+                key={interimKey(interim)}
+                className="rounded-lg border border-dashed border-cyan-500/30 bg-cyan-500/5 px-4 py-3"
+              >
+                  <div className="mb-2 flex items-center gap-2">
+                    <span
+                      className={cn(
+                        "inline-flex h-6 items-center rounded-md px-2 text-xs font-medium ring-1",
+                        speakerClass(interim.speaker),
+                      )}
+                    >
+                      {speakerLabel(interim.speaker)}
+                    </span>
+                    <Loader2 className="size-3.5 animate-spin text-cyan-300" />
+                  </div>
+                  <p className="text-[0.95rem] leading-6 text-zinc-300">
+                    {interim.text}
+                  </p>
+                  {interim.translation && (
+                    <>
+                      <Separator className="my-3 bg-cyan-500/20" />
+                      <p className="text-[0.92rem] leading-6 text-cyan-200">
+                        {interim.translation}
+                      </p>
+                    </>
+                  )}
+                </article>
+              ))}
           </div>
         </ScrollArea>
       </CardContent>
@@ -448,7 +481,7 @@ function ControlBar() {
       }
       if (data.status === "stopped") {
         setRecording(false);
-        setInterim(null);
+        setInterim([]);
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Request failed");
@@ -477,7 +510,7 @@ function ControlBar() {
             variant="outline"
             onClick={() => {
               setMessages([]);
-              setInterim(null);
+              setInterim([]);
             }}
           >
             <Trash2 className="size-4" />

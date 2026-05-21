@@ -24,7 +24,7 @@ export type InterimMessage = {
   utterance_id?: number;
   speaker?: number;
   translation?: string;
-} | null;
+};
 
 export const configAtom = atom<AppConfig>({
   language: "-",
@@ -34,7 +34,7 @@ export const configAtom = atom<AppConfig>({
 
 export const connectionStatusAtom = atom<ConnectionStatus>("connecting");
 export const messagesAtom = atom<TranscriptMessage[]>([]);
-export const interimAtom = atom<InterimMessage>(null);
+export const interimAtom = atom<InterimMessage[]>([]);
 export const errorAtom = atom<string | null>(null);
 
 export const isRecordingAtom = atom(
