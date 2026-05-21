@@ -82,7 +82,7 @@ class AudioSource:
     def start(self) -> None:
         self._seq = 0
         self._samples_seen = 0
-        self.ring_buffer = AudioRingBuffer()
+        self.ring_buffer.clear()
         self._stream = sd.InputStream(
             device=self.device,
             samplerate=self.sample_rate,

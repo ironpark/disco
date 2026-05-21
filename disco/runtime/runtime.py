@@ -114,6 +114,7 @@ class Runtime:
 
     def start(self, source: AudioSource) -> None:
         self._source = source
+        self.transcriber_worker.set_ring_buffer(source.ring_buffer)
 
         self.diarizer.start()
         self.transcriber_worker.start()

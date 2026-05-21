@@ -37,6 +37,10 @@ class AudioRingBuffer:
             while self._frames and self._frames[0].t_end < cutoff:
                 self._frames.popleft()
 
+    def clear(self) -> None:
+        with self._lock:
+            self._frames.clear()
+
     def span(self, t_start: float, t_end: float) -> np.ndarray:
         """Return concatenated samples overlapping ``[t_start, t_end]``."""
         if t_end <= t_start:
@@ -47,13 +51,20 @@ class AudioRingBuffer:
         for frame in frames:
             if frame.t_end <= t_start or frame.t_start >= t_end:
                 continue
-            start_offset = max(0, int((t_start - frame.t_start) * frame.sample_rate))
+            start_offset = max(0, round((t_start - frame.t_start) * frame.sample_rate))
             end_offset = min(
                 len(frame.samples),
-                int((t_end - frame.t_start) * frame.sample_rate),
+                round((t_end - frame.t_start) * frame.sample_rate),
             )
             if end_offset > start_offset:
                 chunks.append(frame.samples[start_offset:end_offset])
         if not chunks:
             return np.array([], dtype=np.float32)
         return np.concatenate(chunks)
+
+    def latest_t_end(self) -> float | None:
+        """Return the newest frame end time, if any."""
+        with self._lock:
+            if not self._frames:
+                return None
+            return self._frames[-1].t_end

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from disco.asr.hallucination import is_hallucination
-from disco.audio.frame import AudioFrame
+from disco.audio.frame import AudioFrame, AudioRingBuffer
 from disco.runtime.debug import log as debug_log
 from disco.runtime.events import (
     EventBus,
@@ -80,18 +80,21 @@ class TranscriberWorker:
         sample_rate: int = 16000,
         max_queue: int = 200,
         max_draining_sessions: int = 3,
+        ring_preroll_s: float = 0.2,
     ):
         self.transcriber = transcriber
         self.bus = bus
         self.sample_rate = sample_rate
         self.max_queue = max_queue
         self.max_draining_sessions = max_draining_sessions
+        self.ring_preroll_s = ring_preroll_s
 
         self._queue: queue.Queue = queue.Queue(maxsize=max_queue)
         self._thread: threading.Thread | None = None
         self._running = False
         self._ready = threading.Event()
         self._load_error: Exception | None = None
+        self._ring_buffer: AudioRingBuffer | None = None
         self._state_lock = threading.Lock()
         self._draining_count = 0
         self._oldest_drain_age = 0.0
@@ -128,6 +131,9 @@ class TranscriberWorker:
 
     def feed(self, frame: AudioFrame | np.ndarray) -> None:
         self._enqueue(frame, kind="audio")
+
+    def set_ring_buffer(self, ring_buffer: AudioRingBuffer) -> None:
+        self._ring_buffer = ring_buffer
 
     def open_session(self, t: float, utterance_id: int) -> None:
         self._enqueue(_Open(t=t, utterance_id=utterance_id), kind="open")
@@ -204,17 +210,31 @@ class TranscriberWorker:
                 end_t=open_evt.t,
                 utterance_id=open_evt.utterance_id,
             )
-            replayed = len(pending)
-            for chunk in pending:
-                recording.session.feed(
-                    chunk.samples if isinstance(chunk, AudioFrame) else chunk
-                )
+            replayed = 0
+            replay_source = "pending"
+            if self._ring_buffer is not None:
+                latest_t = self._ring_buffer.latest_t_end()
+                if latest_t is not None:
+                    t_start = max(0.0, open_evt.t - self.ring_preroll_s)
+                    audio = self._ring_buffer.span(t_start, latest_t)
+                    if len(audio):
+                        recording.session.feed(audio)
+                        recording.end_t = latest_t
+                        replayed = len(audio)
+                        replay_source = "ring"
+            if replayed == 0:
+                replayed = len(pending)
+                for chunk in pending:
+                    recording.session.feed(
+                        chunk.samples if isinstance(chunk, AudioFrame) else chunk
+                    )
             pending.clear()
             debug_log(
                 "tw",
                 f"_Open t={open_evt.t:.2f}",
                 f"utt={open_evt.utterance_id}",
-                f"replayed={replayed} chunks",
+                f"replayed={replayed}",
+                f"source={replay_source}",
                 f"draining={len(draining)}",
             )
             update_state()
@@ -273,6 +293,47 @@ class TranscriberWorker:
                 finish_drained(dropped)
             update_state()
 
+        def close_recording(close_evt: _Close) -> None:
+            nonlocal recording
+            assert recording is not None
+            if self._ring_buffer is not None:
+                audio = self._ring_buffer.span(recording.start_t, close_evt.t)
+                if len(audio):
+                    final_state = _SessionState(
+                        session=self.transcriber.start_session(),
+                        start_t=recording.start_t,
+                        end_t=close_evt.t,
+                        utterance_id=recording.utterance_id,
+                    )
+                    final_state.session.feed(audio)
+                    final_state.session.close()
+                    add_draining(final_state)
+                    debug_log(
+                        "tw",
+                        f"_Close t={close_evt.t:.2f}",
+                        f"span=({final_state.start_t:.2f},{final_state.end_t:.2f})",
+                        f"utt={final_state.utterance_id}",
+                        f"source=ring samples={len(audio)}",
+                        f"draining={len(draining)}",
+                    )
+                    recording = None
+                    update_state()
+                    return
+
+            recording.session.close()
+            recording.end_t = max(recording.end_t, close_evt.t)
+            add_draining(recording)
+            debug_log(
+                "tw",
+                f"_Close t={close_evt.t:.2f}",
+                f"span=({recording.start_t:.2f},{recording.end_t:.2f})",
+                f"utt={recording.utterance_id}",
+                "source=session",
+                f"draining={len(draining)}",
+            )
+            recording = None
+            update_state()
+
         while self._running:
             try:
                 item = self._queue.get(timeout=0.05)
@@ -295,18 +356,7 @@ class TranscriberWorker:
 
             elif isinstance(item, _Close):
                 if recording is not None and recording.utterance_id == item.utterance_id:
-                    recording.session.close()
-                    recording.end_t = max(recording.end_t, item.t)
-                    add_draining(recording)
-                    debug_log(
-                        "tw",
-                        f"_Close t={item.t:.2f}",
-                        f"span=({recording.start_t:.2f},{recording.end_t:.2f})",
-                        f"utt={recording.utterance_id}",
-                        f"draining={len(draining)}",
-                    )
-                    recording = None
-                    update_state()
+                    close_recording(item)
                 elif recording is not None:
                     debug_log(
                         "tw",
@@ -316,12 +366,24 @@ class TranscriberWorker:
                     )
                 # if idle: ignore
             elif isinstance(item, (AudioFrame, np.ndarray)):
-                chunk = item.samples if isinstance(item, AudioFrame) else item
                 if recording is not None:
-                    recording.session.feed(chunk)
                     if isinstance(item, AudioFrame):
+                        if item.t_end <= recording.end_t:
+                            continue
+                        if item.t_start < recording.end_t:
+                            offset = round(
+                                (recording.end_t - item.t_start) * item.sample_rate
+                            )
+                            chunk = item.samples[max(0, offset) :]
+                        else:
+                            chunk = item.samples
+                        if len(chunk) == 0:
+                            continue
+                        recording.session.feed(chunk)
                         recording.end_t = max(recording.end_t, item.t_end)
                     else:
+                        chunk = item
+                        recording.session.feed(chunk)
                         recording.end_t += len(chunk) / self.sample_rate
                 else:
                     # No open recording session yet: park for the next session.
