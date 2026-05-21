@@ -49,7 +49,7 @@ class TranslationService:
         self._updated = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._latest_interim: Interim | None = None
+        self._latest_interims: dict[int, Interim] = {}
         self._last_interim_key: tuple[int, str] | None = None
         self._last_interim_emit_at = 0.0
 
@@ -76,8 +76,9 @@ class TranslationService:
         text = event.text.strip()
         if len(text) < self.interim_min_chars:
             return
+        key = event.utterance_id
         with self._lock:
-            self._latest_interim = event
+            self._latest_interims[key] = event
         self._updated.set()
 
     def submit_final(self, event: LabeledFinal) -> None:
@@ -109,11 +110,14 @@ class TranslationService:
                 continue
             if self._drain_one_final():
                 with self._lock:
-                    if self._latest_interim is None:
-                        self._latest_interim = event
+                    if event.utterance_id not in self._latest_interims:
+                        self._latest_interims[event.utterance_id] = event
                         self._updated.set()
                 continue
             self._translate_interim(event)
+            with self._lock:
+                if self._latest_interims:
+                    self._updated.set()
 
         while self._drain_one_final(block=False):
             pass
@@ -144,15 +148,17 @@ class TranslationService:
 
     def _take_latest_interim(self) -> Interim | None:
         with self._lock:
-            event = self._latest_interim
-            self._latest_interim = None
-        if event is None:
+            while self._latest_interims:
+                event = min(
+                    self._latest_interims.values(),
+                    key=lambda item: item.span[1],
+                )
+                self._latest_interims.pop(event.utterance_id, None)
+                text = event.text.strip()
+                key = (event.utterance_id, text)
+                if key != self._last_interim_key:
+                    return event
             return None
-        text = event.text.strip()
-        key = (event.utterance_id, text)
-        if key == self._last_interim_key:
-            return None
-        return event
 
     def _translate_interim(self, event: Interim) -> None:
         text = event.text.strip()
@@ -160,7 +166,7 @@ class TranslationService:
         source_lang = LANG_CODE_MAP.get(self.language.lower(), "en")
         translation = self.translator.translate(text, source_lang)
         with self._lock:
-            current = self._latest_interim
+            current = self._latest_interims.get(event.utterance_id)
         if current is not None:
             current_key = (current.utterance_id, current.text.strip())
             if current_key != key:

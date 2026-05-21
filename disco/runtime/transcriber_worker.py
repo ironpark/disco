@@ -243,8 +243,11 @@ class TranscriberWorker:
             )
             update_state()
 
-        def publish_interim(state: _SessionState) -> None:
-            if state.session.step() and state.session.text != state.last_emit_text:
+        def step_session(state: _SessionState) -> bool:
+            return bool(state.session.step())
+
+        def publish_interim(state: _SessionState, *, changed: bool) -> None:
+            if changed and state.session.text != state.last_emit_text:
                 state.last_emit_text = state.session.text
                 self.bus.publish(
                     Interim(
@@ -396,11 +399,12 @@ class TranscriberWorker:
                     pending.append(item)
 
             if recording is not None:
-                publish_interim(recording)
+                publish_interim(recording, changed=step_session(recording))
 
             for state in list(draining):
+                changed = step_session(state)
                 if state.publish_interim:
-                    publish_interim(state)
+                    publish_interim(state, changed=changed)
                 if state.session.done:
                     draining.remove(state)
                     finish_drained(state)
