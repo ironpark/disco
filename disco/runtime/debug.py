@@ -2,7 +2,7 @@
 
 Enable with ``DISCO_DEBUG=1`` in the environment. Channels (comma-separated
 in ``DISCO_DEBUG_CHANNELS``, default all) let you focus on one component:
-``diar``, ``coord``, ``enrich``, ``tw``.
+``diar``, ``coord``, ``enrich``, ``interim``, ``tw``.
 """
 
 import os
@@ -11,7 +11,7 @@ import time
 
 _ENABLED = os.environ.get("DISCO_DEBUG") == "1"
 _CHANNELS = set(
-    (os.environ.get("DISCO_DEBUG_CHANNELS") or "diar,coord,enrich,tw").split(",")
+    (os.environ.get("DISCO_DEBUG_CHANNELS") or "diar,coord,enrich,interim,tw").split(",")
 )
 
 

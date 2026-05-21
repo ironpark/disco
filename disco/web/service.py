@@ -9,7 +9,7 @@ from fastapi import WebSocket
 from disco.asr import make_transcriber
 from disco.audio.source import AudioSource
 from disco.diar import Diarizer
-from disco.runtime.events import EnrichedFinal, EventBus, Interim
+from disco.runtime.events import EnrichedFinal, EnrichedInterim, EventBus, Interim
 from disco.runtime.runtime import Runtime
 from disco.translation import KoreanTranslator
 
@@ -142,6 +142,7 @@ class PipelineService:
 
         bus = EventBus()
         bus.subscribe(Interim, self._on_interim)
+        bus.subscribe(EnrichedInterim, self._on_enriched_interim)
         bus.subscribe(EnrichedFinal, self._on_final)
 
         self.bus = bus
@@ -158,9 +159,17 @@ class PipelineService:
         )
 
     def _on_interim(self, event: Interim) -> None:
-        msg: dict = {"type": "interim", "text": event.text}
+        msg: dict = {"type": "interim", "text": event.text, "span": event.span}
         if event.speaker is not None:
             msg["speaker"] = event.speaker
+        self.connections.schedule(msg)
+
+    def _on_enriched_interim(self, event: EnrichedInterim) -> None:
+        msg: dict = {"type": "interim", "text": event.text, "span": event.span}
+        if event.speaker is not None:
+            msg["speaker"] = event.speaker
+        if event.translation is not None:
+            msg["translation"] = event.translation
         self.connections.schedule(msg)
 
     def _on_final(self, event: EnrichedFinal) -> None:

@@ -1,5 +1,7 @@
 """Korean translation using translategemma."""
 
+import threading
+
 
 class KoreanTranslator:
     """Translate text to Korean using translategemma."""
@@ -16,6 +18,7 @@ class KoreanTranslator:
         self.model_name = model_name
         self._model = None
         self._tokenizer = None
+        self._lock = threading.Lock()
 
     def load(self) -> None:
         """Load the translation model."""
@@ -58,29 +61,30 @@ class KoreanTranslator:
         try:
             from mlx_lm import generate
 
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "source_lang_code": source_lang,
-                            "target_lang_code": "ko",
-                            "text": text,
-                        }
-                    ],
-                }
-            ]
-            prompt = self.tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, tokenize=False
-            )
-            response = generate(
-                self.model,
-                self.tokenizer,
-                prompt=prompt,
-                max_tokens=256,
-                verbose=False,
-            )
+            with self._lock:
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "source_lang_code": source_lang,
+                                "target_lang_code": "ko",
+                                "text": text,
+                            }
+                        ],
+                    }
+                ]
+                prompt = self.tokenizer.apply_chat_template(
+                    messages, add_generation_prompt=True, tokenize=False
+                )
+                response = generate(
+                    self.model,
+                    self.tokenizer,
+                    prompt=prompt,
+                    max_tokens=256,
+                    verbose=False,
+                )
             return response.strip()
         except Exception as e:
             return f"[Translation error: {e}]"

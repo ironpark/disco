@@ -12,12 +12,14 @@ from disco.runtime.enricher import FinalEnricher
 from disco.runtime.events import (
     EventBus,
     Final,
+    Interim,
     QueueOverflow,
     SpeakerActivity,
     SpeakerChange,
     SpeechEnd,
     SpeechStart,
 )
+from disco.runtime.interim_translator import InterimTranslator
 from disco.runtime.transcriber_worker import TranscriberWorker
 from disco.translation.korean import KoreanTranslator
 
@@ -96,6 +98,12 @@ class Runtime:
             language=language,
             grace_s=0.3,
         )
+        self.interim_translator = InterimTranslator(
+            bus=bus,
+            translator=translator,
+            language=language,
+            interval_s=1.0,
+        )
 
         self._source: AudioSource | None = None
         self._wired = False
@@ -109,6 +117,7 @@ class Runtime:
         self.diarizer.start()
         self.transcriber_worker.start()
         self.enricher.start()
+        self.interim_translator.start()
 
         source.subscribe(self.diarizer)
         source.subscribe(self.transcriber_worker)
@@ -118,6 +127,7 @@ class Runtime:
             self.bus.subscribe(SpeechStart, self._on_speech_start)
             self.bus.subscribe(SpeechEnd, self._on_speech_end)
             self.bus.subscribe(SpeakerChange, self._on_speaker_change)
+            self.bus.subscribe(Interim, self._on_interim)
             self.bus.subscribe(Final, self._on_final)
             self.bus.subscribe(QueueOverflow, self._on_overflow)
             self._wired = True
@@ -140,6 +150,7 @@ class Runtime:
             self._source.stop()
             self._source = None
         self.transcriber_worker.stop()
+        self.interim_translator.stop()
         self.enricher.stop()
         self.diarizer.stop()
 
@@ -158,6 +169,9 @@ class Runtime:
         # still draining.
         self.transcriber_worker.close_session(event.t)
         self.transcriber_worker.open_session(event.t)
+
+    def _on_interim(self, event: Interim) -> None:
+        self.interim_translator.submit(event)
 
     def _on_final(self, event: Final) -> None:
         self.enricher.submit(event)

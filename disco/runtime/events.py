@@ -53,6 +53,14 @@ class Interim:
 
 
 @dataclass(frozen=True)
+class EnrichedInterim:
+    text: str
+    span: tuple[float, float]
+    speaker: int | None = None
+    translation: str | None = None
+
+
+@dataclass(frozen=True)
 class Final:
     """Raw final emitted by the transcriber worker; no speaker/translation yet."""
 

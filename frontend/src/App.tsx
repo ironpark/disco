@@ -32,7 +32,13 @@ import {
 
 type ServerMessage =
   | ({ type: "config" } & AppConfig)
-  | { type: "interim"; text: string; speaker?: number }
+  | {
+      type: "interim";
+      text: string;
+      span?: [number, number];
+      speaker?: number;
+      translation?: string;
+    }
   | { type: "final"; text: string; translation?: string; speaker?: number }
   | { type: "pong" };
 
@@ -91,7 +97,42 @@ function useDiscoSocket() {
           return;
         }
         if (data.type === "interim") {
-          setInterim({ text: data.text, speaker: data.speaker });
+          setInterim((current) => {
+            const incomingStart = data.span?.[0];
+            const incomingEnd = data.span?.[1] ?? Number.POSITIVE_INFINITY;
+            const currentStart = current?.span?.[0];
+            const currentEnd = current?.span?.[1] ?? Number.NEGATIVE_INFINITY;
+            const isNewUtterance =
+              current !== null &&
+              ((incomingStart !== undefined &&
+                currentStart !== undefined &&
+                Math.abs(incomingStart - currentStart) > 0.25) ||
+                (data.speaker !== undefined &&
+                  current.speaker !== undefined &&
+                  data.speaker !== current.speaker) ||
+                (!data.translation &&
+                  current.text.length > 0 &&
+                  data.text.length + 3 < current.text.length));
+
+            if (
+              data.translation &&
+              current &&
+              !isNewUtterance &&
+              incomingEnd < currentEnd
+            ) {
+              return {
+                ...current,
+                translation: data.translation,
+              };
+            }
+
+            return {
+              text: data.text,
+              span: data.span,
+              speaker: data.speaker,
+              translation: data.translation ?? (isNewUtterance ? undefined : current?.translation),
+            };
+          });
           return;
         }
         if (data.type === "final") {
@@ -269,6 +310,14 @@ function TranscriptPanel() {
                 <p className="text-[0.95rem] leading-6 text-zinc-300">
                   {interim.text}
                 </p>
+                {interim.translation && (
+                  <>
+                    <Separator className="my-3 bg-cyan-500/20" />
+                    <p className="text-[0.92rem] leading-6 text-cyan-200">
+                      {interim.translation}
+                    </p>
+                  </>
+                )}
               </article>
             )}
           </div>

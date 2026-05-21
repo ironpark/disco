@@ -18,7 +18,9 @@ export type TranscriptMessage = {
 
 export type InterimMessage = {
   text: string;
+  span?: [number, number];
   speaker?: number;
+  translation?: string;
 } | null;
 
 export const configAtom = atom<AppConfig>({
