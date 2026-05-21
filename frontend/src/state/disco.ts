@@ -12,6 +12,8 @@ export type TranscriptMessage = {
   id: string;
   text: string;
   translation?: string;
+  span?: [number, number];
+  utterance_id?: number;
   speaker?: number;
   time: string;
 };
@@ -19,6 +21,7 @@ export type TranscriptMessage = {
 export type InterimMessage = {
   text: string;
   span?: [number, number];
+  utterance_id?: number;
   speaker?: number;
   translation?: string;
 } | null;

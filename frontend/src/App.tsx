@@ -36,10 +36,18 @@ type ServerMessage =
       type: "interim";
       text: string;
       span?: [number, number];
+      utterance_id?: number;
       speaker?: number;
       translation?: string;
     }
-  | { type: "final"; text: string; translation?: string; speaker?: number }
+  | {
+      type: "final";
+      text: string;
+      span?: [number, number];
+      utterance_id?: number;
+      translation?: string;
+      speaker?: number;
+    }
   | { type: "pong" };
 
 const speakerPalette = [
@@ -98,13 +106,25 @@ function useDiscoSocket() {
         }
         if (data.type === "interim") {
           setInterim((current) => {
+            if (
+              data.translation &&
+              current?.utterance_id !== undefined &&
+              data.utterance_id !== undefined &&
+              current.utterance_id !== data.utterance_id
+            ) {
+              return current;
+            }
+
             const incomingStart = data.span?.[0];
             const incomingEnd = data.span?.[1] ?? Number.POSITIVE_INFINITY;
             const currentStart = current?.span?.[0];
             const currentEnd = current?.span?.[1] ?? Number.NEGATIVE_INFINITY;
             const isNewUtterance =
               current !== null &&
-              ((incomingStart !== undefined &&
+              ((data.utterance_id !== undefined &&
+                current.utterance_id !== undefined &&
+                data.utterance_id !== current.utterance_id) ||
+                (incomingStart !== undefined &&
                 currentStart !== undefined &&
                 Math.abs(incomingStart - currentStart) > 0.25) ||
                 (data.speaker !== undefined &&
@@ -129,6 +149,7 @@ function useDiscoSocket() {
             return {
               text: data.text,
               span: data.span,
+              utterance_id: data.utterance_id,
               speaker: data.speaker,
               translation: data.translation ?? (isNewUtterance ? undefined : current?.translation),
             };
@@ -136,13 +157,27 @@ function useDiscoSocket() {
           return;
         }
         if (data.type === "final") {
-          setInterim(null);
+          setInterim((current) => {
+            if (
+              current?.utterance_id !== undefined &&
+              data.utterance_id !== undefined &&
+              current.utterance_id !== data.utterance_id
+            ) {
+              return current;
+            }
+            return null;
+          });
           setMessages((current) => [
             ...current,
             {
-              id: crypto.randomUUID(),
+              id:
+                data.utterance_id !== undefined
+                  ? String(data.utterance_id)
+                  : crypto.randomUUID(),
               text: data.text,
               translation: data.translation,
+              span: data.span,
+              utterance_id: data.utterance_id,
               speaker: data.speaker,
               time: new Date().toLocaleTimeString([], {
                 hour: "2-digit",

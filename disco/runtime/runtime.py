@@ -1,4 +1,4 @@
-"""Wire AudioSource → workers → EventBus + enrich Final into EnrichedFinal."""
+"""Wire AudioSource → diarization → ASR → enrichment/translation events."""
 
 import os
 import threading
@@ -13,13 +13,15 @@ from disco.runtime.events import (
     EventBus,
     Final,
     Interim,
+    LabeledFinal,
     QueueOverflow,
     SpeakerActivity,
     SpeakerChange,
     SpeechEnd,
     SpeechStart,
+    WorkerBackpressure,
 )
-from disco.runtime.interim_translator import InterimTranslator
+from disco.runtime.translation_service import TranslationService
 from disco.runtime.transcriber_worker import TranscriberWorker
 from disco.translation.korean import KoreanTranslator
 
@@ -94,15 +96,14 @@ class Runtime:
         self.enricher = FinalEnricher(
             bus=bus,
             diarizer=diarizer,
-            translator=translator,
             language=language,
             grace_s=0.3,
         )
-        self.interim_translator = InterimTranslator(
+        self.translation_service = TranslationService(
             bus=bus,
             translator=translator,
             language=language,
-            interval_s=1.0,
+            interim_interval_s=1.0,
         )
 
         self._source: AudioSource | None = None
@@ -117,7 +118,7 @@ class Runtime:
         self.diarizer.start()
         self.transcriber_worker.start()
         self.enricher.start()
-        self.interim_translator.start()
+        self.translation_service.start()
 
         source.subscribe(self.diarizer)
         source.subscribe(self.transcriber_worker)
@@ -129,7 +130,9 @@ class Runtime:
             self.bus.subscribe(SpeakerChange, self._on_speaker_change)
             self.bus.subscribe(Interim, self._on_interim)
             self.bus.subscribe(Final, self._on_final)
+            self.bus.subscribe(LabeledFinal, self._on_labeled_final)
             self.bus.subscribe(QueueOverflow, self._on_overflow)
+            self.bus.subscribe(WorkerBackpressure, self._on_backpressure)
             self._wired = True
 
         source.start()
@@ -150,40 +153,51 @@ class Runtime:
             self._source.stop()
             self._source = None
         self.transcriber_worker.stop()
-        self.interim_translator.stop()
         self.enricher.stop()
+        self.translation_service.stop()
         self.diarizer.stop()
 
     # ---- bus handlers ----
 
     def _on_speech_start(self, event: SpeechStart) -> None:
-        self.transcriber_worker.open_session(event.t)
+        self.transcriber_worker.open_session(event.t, event.utterance_id)
 
     def _on_speech_end(self, event: SpeechEnd) -> None:
-        self.transcriber_worker.close_session(event.t)
+        self.transcriber_worker.close_session(event.t, event.utterance_id)
 
     def _on_speaker_change(self, event: SpeakerChange) -> None:
         # Close the previous speaker's session and open a fresh one at the
         # same instant. TranscriberWorker's deferred-open slot handles the
         # case where the new _Open arrives while the previous session is
         # still draining.
-        self.transcriber_worker.close_session(event.t)
-        self.transcriber_worker.open_session(event.t)
+        self.transcriber_worker.close_session(event.t, event.utterance_id)
+        self.transcriber_worker.open_session(event.t, event.next_utterance_id)
 
     def _on_interim(self, event: Interim) -> None:
-        self.interim_translator.submit(event)
+        self.translation_service.submit_interim(event)
 
     def _on_final(self, event: Final) -> None:
         self.enricher.submit(event)
 
+    def _on_labeled_final(self, event: LabeledFinal) -> None:
+        self.translation_service.submit_final(event)
+
     def _on_overflow(self, event: QueueOverflow) -> None:
         print(f"[backpressure] {event.component} queue dropped chunk (depth={event.depth})")
 
+    def _on_backpressure(self, event: WorkerBackpressure) -> None:
+        print(
+            f"[backpressure] {event.component} {event.reason} "
+            f"(depth={event.depth})"
+        )
+
     def _metrics_loop(self) -> None:
         while not self._metrics_stop.wait(self.METRICS_INTERVAL_S):
-            tw_depth = self.transcriber_worker._queue.qsize()
+            tw = self.transcriber_worker.snapshot()
             diar_depth = self.diarizer._queue.qsize()
             print(
-                f"[metrics] queues: transcriber={tw_depth} "
-                f"diarizer={diar_depth} t={time.strftime('%H:%M:%S')}"
+                f"[metrics] queues: transcriber={tw['queue_depth']} "
+                f"diarizer={diar_depth} drains={tw['draining_count']} "
+                f"oldest_drain={tw['oldest_drain_age']:.2f}s "
+                f"t={time.strftime('%H:%M:%S')}"
             )

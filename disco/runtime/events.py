@@ -29,11 +29,13 @@ class SpeakerActivity:
 @dataclass(frozen=True)
 class SpeechStart:
     t: float
+    utterance_id: int
 
 
 @dataclass(frozen=True)
 class SpeechEnd:
     t: float
+    utterance_id: int
 
 
 @dataclass(frozen=True)
@@ -43,12 +45,15 @@ class SpeakerChange:
     from_speaker: int | None
     to_speaker: int
     t: float
+    utterance_id: int
+    next_utterance_id: int
 
 
 @dataclass(frozen=True)
 class Interim:
     text: str
     span: tuple[float, float]
+    utterance_id: int
     speaker: int | None = None
 
 
@@ -56,6 +61,7 @@ class Interim:
 class EnrichedInterim:
     text: str
     span: tuple[float, float]
+    utterance_id: int
     speaker: int | None = None
     translation: str | None = None
 
@@ -66,12 +72,24 @@ class Final:
 
     text: str
     span: tuple[float, float]
+    utterance_id: int
+
+
+@dataclass(frozen=True)
+class LabeledFinal:
+    """Final with speaker attribution; translation is added downstream."""
+
+    text: str
+    span: tuple[float, float]
+    utterance_id: int
+    speaker: int | None = None
 
 
 @dataclass(frozen=True)
 class EnrichedFinal:
     text: str
     span: tuple[float, float]
+    utterance_id: int
     speaker: int | None = None
     translation: str | None = None
 
@@ -81,6 +99,15 @@ class QueueOverflow:
     """A bounded worker queue dropped a chunk."""
 
     component: str
+    depth: int
+
+
+@dataclass(frozen=True)
+class WorkerBackpressure:
+    """A worker hit an internal pressure threshold."""
+
+    component: str
+    reason: str
     depth: int
 
 

@@ -159,13 +159,23 @@ class PipelineService:
         )
 
     def _on_interim(self, event: Interim) -> None:
-        msg: dict = {"type": "interim", "text": event.text, "span": event.span}
+        msg: dict = {
+            "type": "interim",
+            "text": event.text,
+            "span": event.span,
+            "utterance_id": event.utterance_id,
+        }
         if event.speaker is not None:
             msg["speaker"] = event.speaker
         self.connections.schedule(msg)
 
     def _on_enriched_interim(self, event: EnrichedInterim) -> None:
-        msg: dict = {"type": "interim", "text": event.text, "span": event.span}
+        msg: dict = {
+            "type": "interim",
+            "text": event.text,
+            "span": event.span,
+            "utterance_id": event.utterance_id,
+        }
         if event.speaker is not None:
             msg["speaker"] = event.speaker
         if event.translation is not None:
@@ -173,7 +183,12 @@ class PipelineService:
         self.connections.schedule(msg)
 
     def _on_final(self, event: EnrichedFinal) -> None:
-        msg: dict = {"type": "final", "text": event.text}
+        msg: dict = {
+            "type": "final",
+            "text": event.text,
+            "span": event.span,
+            "utterance_id": event.utterance_id,
+        }
         if event.speaker is not None:
             msg["speaker"] = event.speaker
         if event.translation is not None:

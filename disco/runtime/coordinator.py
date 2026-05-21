@@ -60,6 +60,8 @@ class Coordinator:
         self._silence_run = 0
         self._utterance_chunks = 0
         self._bound_speaker: int | None = None
+        self._utterance_id: int | None = None
+        self._next_utterance_id = 1
         self._change_candidate: int | None = None
         self._change_run = 0
         self._utterance_start_t: float = 0.0
@@ -72,6 +74,7 @@ class Coordinator:
                 self._silence_run = 0
                 self._utterance_chunks = 1
                 self._bound_speaker = event.primary_speaker
+                self._utterance_id = self._allocate_utterance_id()
                 self._change_candidate = None
                 self._change_run = 0
                 self._utterance_start_t = event.t_start
@@ -79,11 +82,14 @@ class Coordinator:
                 debug_log(
                     "coord",
                     f"SpeechStart t={event.t_start:.2f}",
+                    f"utt={self._utterance_id}",
                     f"S{event.primary_speaker}",
                     f"all={event.all_speakers}",
                     "reason=activity",
                 )
-                self.bus.publish(SpeechStart(t=event.t_start))
+                self.bus.publish(
+                    SpeechStart(t=event.t_start, utterance_id=self._utterance_id)
+                )
             return
 
         # state == "speaking"
@@ -151,10 +157,13 @@ class Coordinator:
             self._change_run = 1
 
         if self._change_run >= self.speaker_change_chunks:
+            old_utterance_id = self._utterance_id
+            next_utterance_id = self._allocate_utterance_id()
             debug_log(
                 "coord",
                 f"SpeakerChange S{self._bound_speaker}->S{event.primary_speaker}",
                 f"t={event.t_end:.2f}",
+                f"utt={old_utterance_id}->{next_utterance_id}",
                 f"held={self._change_run} chunks",
             )
             self.bus.publish(
@@ -162,22 +171,31 @@ class Coordinator:
                     from_speaker=self._bound_speaker,
                     to_speaker=event.primary_speaker,
                     t=event.t_end,
+                    utterance_id=old_utterance_id or 0,
+                    next_utterance_id=next_utterance_id,
                 )
             )
             # Stay in "speaking", but rebind to the new speaker so the
             # next chunks belong to a fresh session whose primary is them.
             self._bound_speaker = event.primary_speaker
+            self._utterance_id = next_utterance_id
             self._utterance_chunks = 0
             self._silence_run = 0
             self._change_candidate = None
             self._change_run = 0
             self._utterance_start_t = event.t_end
 
+    def _allocate_utterance_id(self) -> int:
+        utterance_id = self._next_utterance_id
+        self._next_utterance_id += 1
+        return utterance_id
+
     def _start_from_activity(self, event: SpeakerActivity, *, reason: str) -> None:
         self._state = "speaking"
         self._silence_run = 0
         self._utterance_chunks = 1
         self._bound_speaker = event.primary_speaker
+        self._utterance_id = self._allocate_utterance_id()
         self._change_candidate = None
         self._change_run = 0
         self._utterance_start_t = event.t_start
@@ -185,22 +203,25 @@ class Coordinator:
         debug_log(
             "coord",
             f"SpeechStart t={event.t_start:.2f}",
+            f"utt={self._utterance_id}",
             f"S{event.primary_speaker}",
             f"all={event.all_speakers}",
             f"reason={reason}",
         )
-        self.bus.publish(SpeechStart(t=event.t_start))
+        self.bus.publish(SpeechStart(t=event.t_start, utterance_id=self._utterance_id))
 
     def _publish_end(self, t: float, *, reason: str) -> None:
+        utterance_id = self._utterance_id
         debug_log(
             "coord",
             f"SpeechEnd t={t:.2f}",
+            f"utt={utterance_id}",
             f"reason={reason}",
             f"silence_run={self._silence_run}",
             f"utt_chunks={self._utterance_chunks}",
             f"bound=S{self._bound_speaker}",
         )
-        self.bus.publish(SpeechEnd(t=t))
+        self.bus.publish(SpeechEnd(t=t, utterance_id=utterance_id or 0))
         self._reset()
 
     def _reset(self) -> None:
@@ -208,6 +229,7 @@ class Coordinator:
         self._silence_run = 0
         self._utterance_chunks = 0
         self._bound_speaker = None
+        self._utterance_id = None
         self._change_candidate = None
         self._change_run = 0
         self._pending_end_t = None
