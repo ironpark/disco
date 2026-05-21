@@ -27,6 +27,14 @@ class _Close:
     t: float
 
 
+@dataclass
+class _SessionState:
+    session: Any
+    start_t: float
+    end_t: float
+    last_emit_text: str = ""
+
+
 _STOP = object()
 
 
@@ -145,39 +153,61 @@ class TranscriberWorker:
             return
         self._ready.set()
 
-        state: str = "idle"
-        session: Any = None
-        session_start_t: float = 0.0
-        session_end_t: float = 0.0
-        last_emit_text: str = ""
+        recording: _SessionState | None = None
+        draining: list[_SessionState] = []
         # Sliding buffer of recent audio. Captures chunks that arrive in
         # this worker's queue before the corresponding _Open from the
         # coordinator (the speech-trigger chunk almost always lands here
         # first) and chunks that arrive while we're still draining the
         # previous session.
         pending: deque[AudioFrame | np.ndarray] = deque(maxlen=self.PENDING_MAXLEN)
-        # _Open received while not idle. Applied once we transition to idle
-        # so a tight close/open pair (typical for SpeakerChange) doesn't
-        # silently drop the new session.
-        deferred_open: _Open | None = None
 
         def open_now(open_evt: _Open) -> None:
-            nonlocal session, session_start_t, session_end_t
-            nonlocal last_emit_text, state
-            session = self.transcriber.start_session()
-            session_start_t = open_evt.t
-            session_end_t = open_evt.t
-            last_emit_text = ""
-            state = "recording"
+            nonlocal recording
+            recording = _SessionState(
+                session=self.transcriber.start_session(),
+                start_t=open_evt.t,
+                end_t=open_evt.t,
+            )
             replayed = len(pending)
             for chunk in pending:
-                session.feed(chunk.samples if isinstance(chunk, AudioFrame) else chunk)
+                recording.session.feed(
+                    chunk.samples if isinstance(chunk, AudioFrame) else chunk
+                )
             pending.clear()
             debug_log(
                 "tw",
                 f"_Open t={open_evt.t:.2f}",
                 f"replayed={replayed} chunks",
+                f"draining={len(draining)}",
             )
+
+        def publish_interim(state: _SessionState) -> None:
+            if state.session.step() and state.session.text != state.last_emit_text:
+                state.last_emit_text = state.session.text
+                self.bus.publish(
+                    Interim(
+                        text=state.session.text,
+                        span=(state.start_t, state.end_t),
+                    )
+                )
+
+        def finish_drained(state: _SessionState) -> None:
+            text = state.session.text.strip()
+            debug_log(
+                "tw",
+                f"drained text={text[:40]!r}",
+                f"span=({state.start_t:.2f},{state.end_t:.2f})",
+                f"buffered={len(pending)}",
+                f"remaining_drains={len(draining)}",
+            )
+            if text and not is_hallucination(text):
+                self.bus.publish(
+                    Final(
+                        text=text,
+                        span=(state.start_t, state.end_t),
+                    )
+                )
 
         while self._running:
             try:
@@ -189,95 +219,55 @@ class TranscriberWorker:
                 break
 
             if isinstance(item, _Open):
-                if state == "idle":
+                if recording is None:
                     open_now(item)
                 else:
-                    # Recording or draining — keep the most recent open and
-                    # apply it once draining completes.
-                    deferred_open = item
                     debug_log(
                         "tw",
-                        f"_Open deferred t={item.t:.2f}",
-                        f"state={state}",
+                        f"_Open ignored t={item.t:.2f}",
+                        "state=recording",
                     )
 
             elif isinstance(item, _Close):
-                if state == "recording" and session is not None:
-                    session.close()
-                    session_end_t = max(session_end_t, item.t)
-                    state = "draining"
+                if recording is not None:
+                    recording.session.close()
+                    recording.end_t = max(recording.end_t, item.t)
+                    draining.append(recording)
                     debug_log(
                         "tw",
                         f"_Close t={item.t:.2f}",
-                        f"span=({session_start_t:.2f},{session_end_t:.2f})",
+                        f"span=({recording.start_t:.2f},{recording.end_t:.2f})",
+                        f"draining={len(draining)}",
                     )
-                # if idle: ignore; if draining: already closing
+                    recording = None
+                # if idle: ignore
             elif isinstance(item, (AudioFrame, np.ndarray)):
                 chunk = item.samples if isinstance(item, AudioFrame) else item
-                if state == "recording" and session is not None:
-                    session.feed(chunk)
+                if recording is not None:
+                    recording.session.feed(chunk)
                     if isinstance(item, AudioFrame):
-                        session_end_t = max(session_end_t, item.t_end)
+                        recording.end_t = max(recording.end_t, item.t_end)
                     else:
-                        session_end_t += len(chunk) / self.sample_rate
+                        recording.end_t += len(chunk) / self.sample_rate
                 else:
-                    # idle or draining: park for the (next) session.
+                    # No open recording session yet: park for the next session.
                     pending.append(item)
 
-            # Progress decoding regardless of whether we just consumed an item.
-            if state == "recording" and session is not None:
-                if session.step() and session.text != last_emit_text:
-                    last_emit_text = session.text
-                    self.bus.publish(
-                        Interim(
-                            text=session.text,
-                            span=(session_start_t, session_end_t),
-                        )
-                    )
+            if recording is not None:
+                publish_interim(recording)
 
-            elif state == "draining" and session is not None:
-                # Pump until session reports done. For backends that don't
-                # produce text during recording (e.g. Qwen3-ASR, which can
-                # only start decoding once it has the closed audio buffer),
-                # this is also where text first appears — publish Interim
-                # the same way as the recording branch.
-                if session.step() and session.text != last_emit_text:
-                    last_emit_text = session.text
-                    self.bus.publish(
-                        Interim(
-                            text=session.text,
-                            span=(session_start_t, session_end_t),
-                        )
-                    )
-                if session.done:
-                    text = session.text.strip()
-                    debug_log(
-                        "tw",
-                        f"drained text={text[:40]!r}",
-                        f"span=({session_start_t:.2f},{session_end_t:.2f})",
-                        f"buffered={len(pending)}",
-                    )
-                    if text and not is_hallucination(text):
-                        self.bus.publish(
-                            Final(
-                                text=text,
-                                span=(session_start_t, session_end_t),
-                            )
-                        )
-                    session = None
-                    last_emit_text = ""
-                    state = "idle"
-                    if deferred_open is not None:
-                        pending_open = deferred_open
-                        deferred_open = None
-                        open_now(pending_open)
+            for state in list(draining):
+                # For backends that don't produce text during recording
+                # (e.g. Qwen3-ASR), this is where text first appears.
+                publish_interim(state)
+                if state.session.done:
+                    draining.remove(state)
+                    finish_drained(state)
 
         # Drain on shutdown.
-        if session is not None:
-            session.close()
-            session.drain()
-            text = session.text.strip()
-            if text and not is_hallucination(text):
-                self.bus.publish(
-                    Final(text=text, span=(session_start_t, session_end_t))
-                )
+        if recording is not None:
+            recording.session.close()
+            draining.append(recording)
+        for state in draining:
+            state.session.drain()
+            finish_drained(state)

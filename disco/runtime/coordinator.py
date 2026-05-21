@@ -36,6 +36,7 @@ class Coordinator:
         silence_chunks_for_end: int = 5,
         min_utterance_chunks: int = 5,
         speaker_change_chunks: int = 4,
+        same_speaker_bridge_chunks: int = 8,
     ):
         """
         Args:
@@ -45,11 +46,15 @@ class Coordinator:
             min_utterance_chunks: don't end an utterance shorter than this.
             speaker_change_chunks: consecutive chunks of a different
                 primary before SpeakerChange fires.
+            same_speaker_bridge_chunks: after the normal silence threshold,
+                wait this many additional chunks before ending so the same
+                speaker can bridge short pauses.
         """
         self.bus = bus
         self.silence_chunks_for_end = silence_chunks_for_end
         self.min_utterance_chunks = min_utterance_chunks
         self.speaker_change_chunks = speaker_change_chunks
+        self.same_speaker_bridge_chunks = same_speaker_bridge_chunks
 
         self._state: str = "quiet"
         self._silence_run = 0
@@ -58,6 +63,7 @@ class Coordinator:
         self._change_candidate: int | None = None
         self._change_run = 0
         self._utterance_start_t: float = 0.0
+        self._pending_end_t: float | None = None
 
     def on_activity(self, event: SpeakerActivity) -> None:
         if self._state == "quiet":
@@ -69,11 +75,13 @@ class Coordinator:
                 self._change_candidate = None
                 self._change_run = 0
                 self._utterance_start_t = event.t_start
+                self._pending_end_t = None
                 debug_log(
                     "coord",
                     f"SpeechStart t={event.t_start:.2f}",
                     f"S{event.primary_speaker}",
                     f"all={event.all_speakers}",
+                    "reason=activity",
                 )
                 self.bus.publish(SpeechStart(t=event.t_start))
             return
@@ -89,17 +97,45 @@ class Coordinator:
                 self._silence_run >= self.silence_chunks_for_end
                 and self._utterance_chunks >= self.min_utterance_chunks
             ):
-                debug_log(
-                    "coord",
-                    f"SpeechEnd t={event.t_end:.2f}",
-                    f"utt_chunks={self._utterance_chunks}",
-                    f"bound=S{self._bound_speaker}",
-                )
-                self.bus.publish(SpeechEnd(t=event.t_end))
-                self._reset()
+                if self._pending_end_t is None:
+                    self._pending_end_t = event.t_end
+                    debug_log(
+                        "coord",
+                        f"SpeechEnd pending t={event.t_end:.2f}",
+                        "reason=silence",
+                        f"silence_run={self._silence_run}",
+                        f"utt_chunks={self._utterance_chunks}",
+                        f"bound=S{self._bound_speaker}",
+                    )
+                bridge_run = self._silence_run - self.silence_chunks_for_end
+                if bridge_run >= self.same_speaker_bridge_chunks:
+                    self._publish_end(
+                        self._pending_end_t,
+                        reason="bridge_expired",
+                    )
             return
 
         # Active speaker present.
+        if self._pending_end_t is not None:
+            if event.primary_speaker == self._bound_speaker:
+                debug_log(
+                    "coord",
+                    f"SpeechEnd bridged t={self._pending_end_t:.2f}",
+                    f"resumed=S{event.primary_speaker}",
+                    f"gap_chunks={self._silence_run}",
+                )
+                self._pending_end_t = None
+                self._silence_run = 0
+                self._change_candidate = None
+                self._change_run = 0
+                return
+            self._publish_end(
+                self._pending_end_t,
+                reason=f"new_speaker=S{event.primary_speaker}",
+            )
+            self._start_from_activity(event, reason="after_pending_end")
+            return
+
         self._silence_run = 0
 
         if event.primary_speaker == self._bound_speaker:
@@ -137,6 +173,36 @@ class Coordinator:
             self._change_run = 0
             self._utterance_start_t = event.t_end
 
+    def _start_from_activity(self, event: SpeakerActivity, *, reason: str) -> None:
+        self._state = "speaking"
+        self._silence_run = 0
+        self._utterance_chunks = 1
+        self._bound_speaker = event.primary_speaker
+        self._change_candidate = None
+        self._change_run = 0
+        self._utterance_start_t = event.t_start
+        self._pending_end_t = None
+        debug_log(
+            "coord",
+            f"SpeechStart t={event.t_start:.2f}",
+            f"S{event.primary_speaker}",
+            f"all={event.all_speakers}",
+            f"reason={reason}",
+        )
+        self.bus.publish(SpeechStart(t=event.t_start))
+
+    def _publish_end(self, t: float, *, reason: str) -> None:
+        debug_log(
+            "coord",
+            f"SpeechEnd t={t:.2f}",
+            f"reason={reason}",
+            f"silence_run={self._silence_run}",
+            f"utt_chunks={self._utterance_chunks}",
+            f"bound=S{self._bound_speaker}",
+        )
+        self.bus.publish(SpeechEnd(t=t))
+        self._reset()
+
     def _reset(self) -> None:
         self._state = "quiet"
         self._silence_run = 0
@@ -144,3 +210,4 @@ class Coordinator:
         self._bound_speaker = None
         self._change_candidate = None
         self._change_run = 0
+        self._pending_end_t = None

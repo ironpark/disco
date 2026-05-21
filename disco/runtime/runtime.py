@@ -52,6 +52,7 @@ class Runtime:
         silence_duration: float = 0.5,
         min_utterance_duration: float = 0.5,
         speaker_change_hold: float = 0.4,
+        same_speaker_bridge: float = 0.8,
     ):
         self.bus = bus
         self.transcriber = transcriber
@@ -81,6 +82,7 @@ class Runtime:
             silence_chunks_for_end=max(1, int(silence_duration / block_s)),
             min_utterance_chunks=max(1, int(min_utterance_duration / block_s)),
             speaker_change_chunks=max(1, int(speaker_change_hold / block_s)),
+            same_speaker_bridge_chunks=max(1, int(same_speaker_bridge / block_s)),
         )
         self.transcriber_worker = TranscriberWorker(
             transcriber=transcriber,

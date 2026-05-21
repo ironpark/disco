@@ -24,16 +24,19 @@ class FinalEnricher:
         translator: KoreanTranslator | None = None,
         language: str = "English",
         grace_s: float = 0.3,
+        merge_grace_s: float = 1.0,
     ):
         self.bus = bus
         self.diarizer = diarizer
         self.translator = translator
         self.language = language
         self.grace_s = grace_s
+        self.merge_grace_s = merge_grace_s
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._running = False
         self._stop = threading.Event()
+        self._pending: EnrichedFinal | None = None
 
     def start(self) -> None:
         if self._thread is not None:
@@ -58,14 +61,29 @@ class FinalEnricher:
 
     def _worker(self) -> None:
         while True:
-            event = self._queue.get()
+            timeout = self._pending_timeout()
+            try:
+                event = self._queue.get(timeout=timeout)
+            except queue.Empty:
+                self._flush_pending(reason="merge_timeout")
+                continue
             if event is _STOP:
+                self._flush_pending(reason="stop")
                 break
             if self.grace_s > 0 and not self._stop.is_set():
                 self._stop.wait(self.grace_s)
-            self._enrich(event)
+            enriched = self._enrich(event)
+            self._handle_enriched(enriched)
 
-    def _enrich(self, event: Final) -> None:
+    def _pending_timeout(self) -> float | None:
+        if self._pending is None:
+            return None
+        remaining = self.merge_grace_s - (
+            self.diarizer.elapsed_seconds() - self._pending.span[1]
+        )
+        return max(0.0, remaining)
+
+    def _enrich(self, event: Final) -> EnrichedFinal:
         t_start, t_end = event.span
         speaker = self.diarizer.dominant_speaker_in(t_start, t_end)
         diar_now = self.diarizer.elapsed_seconds()
@@ -77,6 +95,59 @@ class FinalEnricher:
             f"text={event.text[:40]!r}",
         )
 
+        return EnrichedFinal(
+            text=event.text,
+            span=event.span,
+            speaker=int(speaker) if speaker is not None else None,
+            translation=None,
+        )
+
+    def _handle_enriched(self, event: EnrichedFinal) -> None:
+        if self._pending is None:
+            self._pending = event
+            debug_log(
+                "enrich",
+                f"Final pending span=({event.span[0]:.2f},{event.span[1]:.2f})",
+                f"speaker={'S' + str(event.speaker) if event.speaker is not None else '?'}",
+            )
+            return
+
+        gap = event.span[0] - self._pending.span[1]
+        if (
+            self._pending.speaker is not None
+            and event.speaker == self._pending.speaker
+            and 0 <= gap <= self.merge_grace_s
+        ):
+            debug_log(
+                "enrich",
+                f"Final merged gap={gap:.2f}s",
+                f"speaker=S{event.speaker}",
+                f"prev=({self._pending.span[0]:.2f},{self._pending.span[1]:.2f})",
+                f"next=({event.span[0]:.2f},{event.span[1]:.2f})",
+            )
+            self._pending = EnrichedFinal(
+                text=self._join_text(self._pending.text, event.text),
+                span=(self._pending.span[0], event.span[1]),
+                speaker=event.speaker,
+                translation=None,
+            )
+            return
+
+        self._flush_pending(reason=f"next_gap={gap:.2f}s")
+        self._pending = event
+
+    def _flush_pending(self, *, reason: str) -> None:
+        if self._pending is None:
+            return
+        event = self._pending
+        self._pending = None
+        debug_log(
+            "enrich",
+            f"Final publish span=({event.span[0]:.2f},{event.span[1]:.2f})",
+            f"speaker={'S' + str(event.speaker) if event.speaker is not None else '?'}",
+            f"reason={reason}",
+            f"text={event.text[:40]!r}",
+        )
         translation: str | None = None
         if self.translator is not None:
             source_lang = LANG_CODE_MAP.get(self.language.lower(), "en")
@@ -89,7 +160,16 @@ class FinalEnricher:
             EnrichedFinal(
                 text=event.text,
                 span=event.span,
-                speaker=int(speaker) if speaker is not None else None,
+                speaker=event.speaker,
                 translation=translation,
             )
         )
+
+    def _join_text(self, left: str, right: str) -> str:
+        if not left:
+            return right
+        if not right:
+            return left
+        if self.language.lower() in {"japanese", "chinese", "korean"}:
+            return f"{left}{right}"
+        return f"{left} {right}"
